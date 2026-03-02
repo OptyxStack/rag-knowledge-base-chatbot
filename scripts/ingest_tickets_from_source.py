@@ -100,7 +100,7 @@ async def run_ingest(tickets: list[dict], skip_existing: bool = True) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Ingest tickets from source/ JSON files")
     parser.add_argument("--source-dir", default="source", help="Path to source directory")
-    parser.add_argument("--files", nargs="*", help="Specific files (default: tickets.json)")
+    parser.add_argument("--files", nargs="*", help="Specific files (default: sample_conversations.json)")
     parser.add_argument("--dry-run", action="store_true", help="Only load, don't ingest")
     parser.add_argument("--update-existing", action="store_true", help="Update existing tickets")
     args = parser.parse_args()
@@ -112,7 +112,7 @@ def main():
 
     from app.services.ticket_loaders import load_all_tickets
 
-    files = args.files or ["tickets.json"]
+    files = args.files or ["sample_conversations.json", "tickets.json"]  # tickets.json for backward compat
     print(f"Loading tickets from {files}...")
     tickets = load_all_tickets(source_dir, files)
     print(f"Total tickets to ingest: {len(tickets)}")

@@ -1,7 +1,8 @@
-"""Load tickets from source JSON files (WHMCS crawl format).
+"""Load sample conversations from source JSON files (WHMCS crawl format).
 
 Supported format:
-- tickets: {"source": "whmcs", "tickets": [{"external_id", "subject", "description", ...}]}
+- conversations: {"source": "whmcs", "conversations": [{"external_id", "subject", "description", ...}]}
+- tickets: legacy key for backward compatibility
 """
 
 import json
@@ -9,12 +10,13 @@ from pathlib import Path
 from typing import Any
 
 
-def load_tickets_json(path: Path) -> list[dict[str, Any]]:
-    """Load JSON with tickets array. Used by tickets.json."""
+def load_sample_conversations_json(path: Path) -> list[dict[str, Any]]:
+    """Load JSON with conversations array. Used by sample_conversations.json."""
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
+    entries = data.get("conversations", data.get("tickets", []))
     tickets = []
-    for t in data.get("tickets", []):
+    for t in entries:
         external_id = t.get("external_id")
         if not external_id:
             continue
@@ -40,7 +42,8 @@ def load_tickets_json(path: Path) -> list[dict[str, Any]]:
 
 
 LOADERS: dict[str, Any] = {
-    "tickets.json": load_tickets_json,
+    "sample_conversations.json": load_sample_conversations_json,
+    "tickets.json": load_sample_conversations_json,  # backward compat
 }
 
 

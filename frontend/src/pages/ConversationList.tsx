@@ -12,6 +12,7 @@ import {
   Ticket,
   Radio,
   X,
+  Sparkles,
 } from 'lucide-react'
 
 export default function ConversationList() {
@@ -58,14 +59,13 @@ export default function ConversationList() {
 
   return (
     <div className="animate-slide-up">
-      <header className="flex justify-between items-center mb-6">
+      <header className="flex justify-between items-start mb-8">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Conversations</h1>
-          <p className="text-sm text-muted mt-1">Manage and view all customer conversations</p>
+          <h1 className="text-2xl font-bold tracking-tight text-white">Conversations</h1>
+          <p className="text-sm text-zinc-500 mt-1.5">Manage and view all customer conversations</p>
         </div>
         <button
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium
-                     hover:bg-accent-hover shadow-[0_0_0_1px_rgba(99,102,241,0.5)] hover:shadow-[0_0_0_1px_rgba(129,140,248,0.5)]"
+          className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium"
           onClick={() => setShowCreateModal(true)}
         >
           <Plus size={16} />
@@ -74,81 +74,81 @@ export default function ConversationList() {
       </header>
 
       {error && (
-        <div className="flex items-center gap-2 p-3 rounded-lg mb-4 bg-danger/10 border border-danger/30 text-red-300 text-sm animate-fade-in">
+        <div className="flex items-center gap-2 p-3.5 rounded-xl mb-5 bg-danger/10 border border-danger/20 text-red-300 text-sm animate-fade-in">
           {error}
         </div>
       )}
 
-      <div className="bg-surface border border-border rounded-xl overflow-hidden">
+      <div className="glass rounded-2xl overflow-hidden">
         {loading ? (
-          <div className="flex items-center justify-center gap-2 py-16 text-muted">
-            <Loader2 size={18} className="animate-spin-slow" />
+          <div className="flex items-center justify-center gap-3 py-20 text-zinc-500">
+            <Loader2 size={20} className="animate-spin-slow text-accent" />
             <span className="text-sm">Loading conversations...</span>
           </div>
         ) : items.length === 0 ? (
-          <div className="flex flex-col items-center py-16 text-muted">
-            <div className="w-12 h-12 rounded-xl bg-accent-muted flex items-center justify-center mb-4">
-              <MessageSquare size={24} className="text-accent" />
+          <div className="flex flex-col items-center py-20 text-zinc-500">
+            <div className="w-16 h-16 rounded-2xl glass-accent flex items-center justify-center mb-5 glow-sm">
+              <MessageSquare size={28} className="text-violet-400" />
             </div>
-            <p className="font-medium text-zinc-300 mb-1">No conversations yet</p>
-            <p className="text-sm mb-4">Create your first conversation to get started</p>
+            <p className="font-semibold text-zinc-300 mb-1.5">No conversations yet</p>
+            <p className="text-sm mb-5 text-zinc-500">Create your first conversation to get started</p>
             <button
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-hover"
+              className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium"
               onClick={() => setShowCreateModal(true)}
             >
-              <Plus size={16} />
+              <Sparkles size={15} />
               Create conversation
             </button>
           </div>
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border">
-                <th className="px-4 py-3 text-left text-muted font-medium text-xs uppercase tracking-wider">ID</th>
-                <th className="px-4 py-3 text-left text-muted font-medium text-xs uppercase tracking-wider">Source</th>
-                <th className="px-4 py-3 text-left text-muted font-medium text-xs uppercase tracking-wider">Source ID</th>
-                <th className="px-4 py-3 text-left text-muted font-medium text-xs uppercase tracking-wider">Created</th>
-                <th className="px-4 py-3 text-right text-muted font-medium text-xs uppercase tracking-wider">Actions</th>
+              <tr className="border-b border-white/[0.04]">
+                <th className="px-5 py-3.5 text-left text-zinc-500 font-medium text-xs uppercase tracking-wider">ID</th>
+                <th className="px-5 py-3.5 text-left text-zinc-500 font-medium text-xs uppercase tracking-wider">Source</th>
+                <th className="px-5 py-3.5 text-left text-zinc-500 font-medium text-xs uppercase tracking-wider">Source ID</th>
+                <th className="px-5 py-3.5 text-left text-zinc-500 font-medium text-xs uppercase tracking-wider">Created</th>
+                <th className="px-5 py-3.5 text-right text-zinc-500 font-medium text-xs uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody>
               {items.map((c) => (
                 <tr
                   key={c.id}
-                  className="border-b border-border-subtle last:border-b-0 hover:bg-surface-hover transition-colors cursor-pointer group"
+                  className="border-b border-white/[0.03] last:border-b-0 hover:bg-white/[0.02] transition-colors duration-200 cursor-pointer group"
                   onClick={() => navigate(`/conversations/${c.id}`)}
                 >
-                  <td className="px-4 py-3.5">
-                    <code className="text-xs text-accent bg-accent-muted px-1.5 py-0.5 rounded font-mono">
+                  <td className="px-5 py-4">
+                    <code className="text-xs text-violet-400 bg-violet-500/10 px-2 py-1 rounded-lg font-mono">
                       {c.id.slice(0, 8)}
                     </code>
                   </td>
-                  <td className="px-4 py-3.5">
+                  <td className="px-5 py-4">
                     <SourceBadge type={c.source_type} />
                   </td>
-                  <td className="px-4 py-3.5 text-muted-foreground">{c.source_id}</td>
-                  <td className="px-4 py-3.5 text-muted-foreground">
+                  <td className="px-5 py-4 text-zinc-400">{c.source_id}</td>
+                  <td className="px-5 py-4 text-zinc-400">
                     {new Date(c.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                    <span className="text-muted ml-1.5 text-xs">
+                    <span className="text-zinc-600 ml-1.5 text-xs">
                       {new Date(c.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </td>
-                  <td className="px-4 py-3.5">
-                    <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <td className="px-5 py-4">
+                    <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 transition-all duration-200">
                       <Link
                         to={`/conversations/${c.id}`}
-                        className="p-1.5 rounded-md text-muted-foreground hover:text-zinc-100 hover:bg-primary-tertiary"
+                        className="p-2 rounded-lg text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors"
                         onClick={(e) => e.stopPropagation()}
                         title="View"
                       >
-                        <ExternalLink size={15} />
+                        <ExternalLink size={14} />
                       </Link>
                       <button
-                        className="p-1.5 rounded-md text-muted hover:text-danger hover:bg-danger/10"
+                        className="p-2 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
                         onClick={(e) => handleDelete(c.id, e)}
                         title="Delete"
                       >
-                        <Trash2 size={15} />
+                        <Trash2 size={14} />
                       </button>
                     </div>
                   </td>
@@ -160,13 +160,13 @@ export default function ConversationList() {
       </div>
 
       {totalPages > 1 && (
-        <div className="flex items-center justify-between mt-4">
-          <span className="text-sm text-muted">
-            {total} total &middot; page {page} of {totalPages}
+        <div className="flex items-center justify-between mt-5">
+          <span className="text-sm text-zinc-500">
+            {total} total · page {page} of {totalPages}
           </span>
           <div className="flex items-center gap-1">
             <button
-              className="p-2 rounded-lg text-muted-foreground hover:text-zinc-100 hover:bg-surface-hover disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.05] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               disabled={page <= 1}
               onClick={() => setPage((p) => p - 1)}
             >
@@ -178,10 +178,10 @@ export default function ConversationList() {
               return (
                 <button
                   key={p}
-                  className={`w-8 h-8 rounded-lg text-sm font-medium transition-colors
+                  className={`w-9 h-9 rounded-xl text-sm font-medium transition-all duration-200
                     ${p === page
-                      ? 'bg-accent text-white'
-                      : 'text-muted-foreground hover:text-zinc-100 hover:bg-surface-hover'
+                      ? 'btn-primary'
+                      : 'text-zinc-500 hover:text-white hover:bg-white/[0.05]'
                     }`}
                   onClick={() => setPage(p)}
                 >
@@ -190,7 +190,7 @@ export default function ConversationList() {
               )
             })}
             <button
-              className="p-2 rounded-lg text-muted-foreground hover:text-zinc-100 hover:bg-surface-hover disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.05] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               disabled={page >= totalPages}
               onClick={() => setPage((p) => p + 1)}
             >
@@ -217,14 +217,14 @@ function SourceBadge({ type }: { type: string }) {
   const isTicket = type === 'ticket'
   return (
     <span
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md capitalize
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg
         ${isTicket
-          ? 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/20'
-          : 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20'
+          ? 'bg-amber-500/10 text-amber-400 border border-amber-500/15'
+          : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/15'
         }`}
     >
       {isTicket ? <Ticket size={12} /> : <Radio size={12} />}
-      {type}
+      {type === 'ticket' ? 'Sample conversation' : 'Sample conversation'}
     </span>
   )
 }
@@ -243,7 +243,7 @@ function CreateConversationModal({
 
   const handleSubmit = async () => {
     if (!sourceId.trim()) {
-      setError('Please enter ticket or livechat ID')
+      setError('Please enter conversation ID')
       return
     }
     setSubmitting(true)
@@ -259,15 +259,15 @@ function CreateConversationModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[1000] p-4 animate-fade-in" onClick={onCancel}>
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-[1000] p-4 animate-fade-in" onClick={onCancel}>
       <div
-        className="bg-surface border border-border rounded-xl w-full max-w-[480px] shadow-2xl animate-slide-up"
+        className="glass rounded-2xl w-full max-w-[480px] shadow-2xl animate-slide-up gradient-border"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex justify-between items-center px-6 py-4 border-b border-border">
-          <h2 className="text-base font-semibold">New conversation</h2>
+        <div className="flex justify-between items-center px-6 py-5 border-b border-white/[0.04]">
+          <h2 className="text-base font-semibold text-white">New conversation</h2>
           <button
-            className="p-1.5 rounded-lg text-muted hover:text-zinc-100 hover:bg-surface-hover"
+            className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors"
             onClick={onCancel}
             aria-label="Close"
           >
@@ -276,50 +276,44 @@ function CreateConversationModal({
         </div>
         <div className="p-6 space-y-4">
           {error && (
-            <div className="p-3 rounded-lg bg-danger/10 border border-danger/30 text-red-300 text-sm">
+            <div className="p-3.5 rounded-xl bg-danger/10 border border-danger/20 text-red-300 text-sm">
               {error}
             </div>
           )}
           <div>
-            <label className="block text-sm font-medium text-muted-foreground mb-1.5">Source type</label>
+            <label className="block text-sm font-medium text-zinc-400 mb-2">Sample conversation source</label>
             <select
               value={sourceType}
               onChange={(e) => setSourceType(e.target.value as SourceType)}
-              className="w-full px-3 py-2.5 rounded-lg border border-border bg-primary-secondary text-zinc-100 text-sm
-                         focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
+              className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
               aria-label="Source type"
             >
-              <option value="ticket">Ticket</option>
-              <option value="livechat">Livechat</option>
+              <option value="ticket">Sample conversation (ticket)</option>
+              <option value="livechat">Sample conversation (livechat)</option>
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-muted-foreground mb-1.5">
-              {sourceType === 'ticket' ? 'Ticket' : 'Livechat'} ID
-            </label>
+            <label className="block text-sm font-medium text-zinc-400 mb-2">Conversation ID</label>
             <input
               type="text"
-              placeholder="e.g. ticket ID or livechat ID"
+              placeholder="e.g. conversation ID"
               value={sourceId}
               onChange={(e) => setSourceId(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
-              className="w-full px-3 py-2.5 rounded-lg border border-border bg-primary-secondary text-zinc-100 text-sm
-                         focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30
-                         placeholder:text-muted"
+              className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
               aria-label="ID"
             />
           </div>
         </div>
-        <div className="flex justify-end gap-2 px-6 py-4 border-t border-border">
+        <div className="flex justify-end gap-2.5 px-6 py-5 border-t border-white/[0.04]">
           <button
-            className="px-4 py-2.5 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:text-zinc-100 hover:bg-surface-hover"
+            className="btn-ghost px-4 py-2.5 rounded-xl text-sm font-medium"
             onClick={onCancel}
           >
             Cancel
           </button>
           <button
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium
-                       hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed"
+            className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={handleSubmit}
             disabled={submitting}
           >

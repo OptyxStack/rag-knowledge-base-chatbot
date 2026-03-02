@@ -10,6 +10,7 @@ from openai import AsyncOpenAI
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.services.llm_config import get_llm_api_key, get_llm_base_url, get_llm_fallback_model, get_llm_model
 
 logger = get_logger(__name__)
 
@@ -52,10 +53,15 @@ class OpenAIGateway(LLMGateway):
 
     def __init__(self) -> None:
         self._settings = get_settings()
-        self._client = AsyncOpenAI(
-            api_key=self._settings.openai_api_key,
-            timeout=self._settings.llm_timeout_seconds,
-        )
+        api_key = get_llm_api_key()
+        base_url = get_llm_base_url()
+        kwargs: dict = {
+            "api_key": api_key,
+            "timeout": self._settings.llm_timeout_seconds,
+        }
+        if base_url and base_url.strip():
+            kwargs["base_url"] = base_url.strip()
+        self._client = AsyncOpenAI(**kwargs)
 
     async def chat(
         self,
@@ -64,8 +70,8 @@ class OpenAIGateway(LLMGateway):
         **kwargs: Any,
     ) -> LLMResponse:
         """Call OpenAI with fallback, cache, retry."""
-        model = kwargs.pop("model", None) or self._settings.llm_model
-        models_to_try = [model, self._settings.llm_fallback_model]
+        model = kwargs.pop("model", None) or get_llm_model()
+        models_to_try = [model, get_llm_fallback_model()]
         max_tokens = kwargs.pop("max_tokens", None) or self._settings.llm_max_tokens
         timeout = kwargs.get("timeout") or self._settings.llm_timeout_seconds
 

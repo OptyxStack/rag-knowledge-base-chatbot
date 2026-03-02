@@ -15,15 +15,18 @@ import {
   Layers,
   Download,
   Database,
+  Upload,
+  Globe,
+  Sparkles,
 } from 'lucide-react'
 
 const DOC_TYPE_COLORS: Record<string, string> = {
-  policy: 'text-blue-400 bg-blue-500/10 ring-blue-500/20',
-  tos: 'text-purple-400 bg-purple-500/10 ring-purple-500/20',
-  faq: 'text-emerald-400 bg-emerald-500/10 ring-emerald-500/20',
-  howto: 'text-cyan-400 bg-cyan-500/10 ring-cyan-500/20',
-  pricing: 'text-amber-400 bg-amber-500/10 ring-amber-500/20',
-  other: 'text-muted-foreground bg-surface-hover ring-border',
+  policy: 'text-blue-400 bg-blue-500/10 border-blue-500/15',
+  tos: 'text-purple-400 bg-purple-500/10 border-purple-500/15',
+  faq: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/15',
+  howto: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/15',
+  pricing: 'text-amber-400 bg-amber-500/10 border-amber-500/15',
+  other: 'text-zinc-400 bg-white/[0.03] border-white/[0.06]',
 }
 
 export default function DocumentList() {
@@ -39,6 +42,8 @@ export default function DocumentList() {
   const [filterQApplied, setFilterQApplied] = useState('')
   const [ingesting, setIngesting] = useState(false)
   const [ingestResult, setIngestResult] = useState<{ ok: number; skipped: number; error: number } | null>(null)
+  const [showUploadModal, setShowUploadModal] = useState(false)
+  const [showCrawlModal, setShowCrawlModal] = useState(false)
   const pageSize = 15
 
   const load = async () => {
@@ -82,7 +87,7 @@ export default function DocumentList() {
   }
 
   const handleIngestFromSource = async () => {
-    if (!confirm('Ingest documents from source/ folder (custom_docs.json, sample_docs.json, etc.)?')) return
+    if (!confirm('Ingest documents from source/ folder (custom_docs.json, sample_docs.json, sample_conversations.json, etc.)?')) return
     setIngesting(true)
     setError(null)
     setIngestResult(null)
@@ -101,26 +106,38 @@ export default function DocumentList() {
 
   return (
     <div className="animate-slide-up">
-      <header className="flex justify-between items-center mb-6">
+      <header className="flex justify-between items-start mb-8">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Documents</h1>
-          <p className="text-sm text-muted mt-1">Knowledge base documents for AI retrieval</p>
+          <h1 className="text-2xl font-bold tracking-tight text-white">Documents</h1>
+          <p className="text-sm text-zinc-500 mt-1.5">Knowledge base documents for AI retrieval</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <button
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-border text-sm font-medium
-                       text-muted-foreground hover:text-zinc-100 hover:bg-surface-hover transition-colors
-                       disabled:opacity-50 disabled:cursor-not-allowed"
+            className="btn-ghost inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={handleIngestFromSource}
             disabled={ingesting}
-            title="Load from source/custom_docs.json, sample_docs.json, etc."
+            title="Load from source/custom_docs.json, sample_docs.json, sample_conversations.json, etc."
           >
-            {ingesting ? <Loader2 size={16} className="animate-spin-slow" /> : <Database size={16} />}
+            {ingesting ? <Loader2 size={15} className="animate-spin-slow" /> : <Database size={15} />}
             {ingesting ? 'Ingesting...' : 'Ingest from source'}
           </button>
           <button
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium
-                       hover:bg-accent-hover shadow-[0_0_0_1px_rgba(99,102,241,0.5)] hover:shadow-[0_0_0_1px_rgba(129,140,248,0.5)]"
+            className="btn-ghost inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium"
+            onClick={() => setShowUploadModal(true)}
+          >
+            <Upload size={15} />
+            Upload file
+          </button>
+          <button
+            className="btn-ghost inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium"
+            onClick={() => setShowCrawlModal(true)}
+            title="Crawl entire website and add all pages as documents"
+          >
+            <Globe size={15} />
+            Crawl website
+          </button>
+          <button
+            className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium"
             onClick={() => setShowCreateModal(true)}
           >
             <Plus size={16} />
@@ -129,15 +146,13 @@ export default function DocumentList() {
         </div>
       </header>
 
-      <div className="flex flex-wrap items-center gap-2 mb-4">
+      <div className="flex flex-wrap items-center gap-2.5 mb-5">
         <div className="relative">
-          <Filter size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+          <Filter size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
           <select
             value={filterDocType}
             onChange={(e) => setFilterDocType(e.target.value)}
-            className="pl-8 pr-4 py-2.5 rounded-lg border border-border bg-surface text-sm text-zinc-100
-                       focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 appearance-none
-                       min-w-[160px]"
+            className="pl-9 pr-4 py-2.5 rounded-xl input-glass text-sm appearance-none min-w-[160px]"
             aria-label="Filter by type"
           >
             <option value="">All types</option>
@@ -147,29 +162,26 @@ export default function DocumentList() {
           </select>
         </div>
         <div className="relative flex-1 max-w-xs">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+          <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
           <input
             type="search"
             placeholder="Search title, URL..."
             value={filterQ}
             onChange={(e) => setFilterQ(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && setFilterQApplied(filterQ)}
-            className="w-full pl-8 pr-4 py-2.5 rounded-lg border border-border bg-surface text-sm text-zinc-100
-                       focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30
-                       placeholder:text-muted"
+            className="w-full pl-9 pr-4 py-2.5 rounded-xl input-glass text-sm"
             aria-label="Search"
           />
         </div>
         <button
-          className="px-4 py-2.5 rounded-lg bg-surface border border-border text-sm font-medium text-muted-foreground
-                     hover:text-zinc-100 hover:border-accent/50 transition-colors"
+          className="btn-ghost px-4 py-2.5 rounded-xl text-sm font-medium"
           onClick={() => setFilterQApplied(filterQ)}
         >
           Search
         </button>
         {(filterDocType || filterQApplied) && (
           <button
-            className="px-3 py-2.5 rounded-lg text-xs text-muted hover:text-zinc-100 hover:bg-surface-hover transition-colors"
+            className="px-3 py-2.5 rounded-xl text-xs text-zinc-600 hover:text-white hover:bg-white/[0.05] transition-colors"
             onClick={() => { setFilterDocType(''); setFilterQ(''); setFilterQApplied('') }}
           >
             Clear filters
@@ -178,37 +190,37 @@ export default function DocumentList() {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 p-3 rounded-lg mb-4 bg-danger/10 border border-danger/30 text-red-300 text-sm animate-fade-in">
+        <div className="flex items-center gap-2 p-3.5 rounded-xl mb-5 bg-danger/10 border border-danger/20 text-red-300 text-sm animate-fade-in">
           {error}
         </div>
       )}
       {ingestResult && (
-        <div className="flex items-center gap-2 p-3 rounded-lg mb-4 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-sm animate-fade-in">
+        <div className="flex items-center gap-2 p-3.5 rounded-xl mb-5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-sm animate-fade-in">
           Ingest complete: {ingestResult.ok} added, {ingestResult.skipped} skipped, {ingestResult.error} errors
         </div>
       )}
 
-      <div className="bg-surface border border-border rounded-xl overflow-hidden">
+      <div className="glass rounded-2xl overflow-hidden">
         {loading ? (
-          <div className="flex items-center justify-center gap-2 py-16 text-muted">
-            <Loader2 size={18} className="animate-spin-slow" />
+          <div className="flex items-center justify-center gap-3 py-20 text-zinc-500">
+            <Loader2 size={20} className="animate-spin-slow text-accent" />
             <span className="text-sm">Loading documents...</span>
           </div>
         ) : items.length === 0 ? (
-          <div className="flex flex-col items-center py-16 text-muted">
-            <div className="w-12 h-12 rounded-xl bg-accent-muted flex items-center justify-center mb-4">
-              <FileText size={24} className="text-accent" />
+          <div className="flex flex-col items-center py-20 text-zinc-500">
+            <div className="w-16 h-16 rounded-2xl glass-accent flex items-center justify-center mb-5 glow-sm">
+              <FileText size={28} className="text-violet-400" />
             </div>
-            <p className="font-medium text-zinc-300 mb-1">No documents found</p>
-            <p className="text-sm mb-4">
+            <p className="font-semibold text-zinc-300 mb-1.5">No documents found</p>
+            <p className="text-sm mb-5">
               {filterDocType || filterQApplied ? 'Try adjusting your filters' : 'Add your first document to get started'}
             </p>
             {!filterDocType && !filterQApplied && (
               <button
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-hover"
+                className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium"
                 onClick={() => setShowCreateModal(true)}
               >
-                <Plus size={16} />
+                <Sparkles size={15} />
                 Add document
               </button>
             )}
@@ -216,60 +228,60 @@ export default function DocumentList() {
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border">
-                <th className="px-4 py-3 text-left text-muted font-medium text-xs uppercase tracking-wider">ID</th>
-                <th className="px-4 py-3 text-left text-muted font-medium text-xs uppercase tracking-wider">Title</th>
-                <th className="px-4 py-3 text-left text-muted font-medium text-xs uppercase tracking-wider">Type</th>
-                <th className="px-4 py-3 text-left text-muted font-medium text-xs uppercase tracking-wider">Chunks</th>
-                <th className="px-4 py-3 text-left text-muted font-medium text-xs uppercase tracking-wider">Updated</th>
-                <th className="px-4 py-3 text-right text-muted font-medium text-xs uppercase tracking-wider">Actions</th>
+              <tr className="border-b border-white/[0.04]">
+                <th className="px-5 py-3.5 text-left text-zinc-500 font-medium text-xs uppercase tracking-wider">ID</th>
+                <th className="px-5 py-3.5 text-left text-zinc-500 font-medium text-xs uppercase tracking-wider">Title</th>
+                <th className="px-5 py-3.5 text-left text-zinc-500 font-medium text-xs uppercase tracking-wider">Type</th>
+                <th className="px-5 py-3.5 text-left text-zinc-500 font-medium text-xs uppercase tracking-wider">Chunks</th>
+                <th className="px-5 py-3.5 text-left text-zinc-500 font-medium text-xs uppercase tracking-wider">Updated</th>
+                <th className="px-5 py-3.5 text-right text-zinc-500 font-medium text-xs uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody>
               {items.map((d) => (
                 <tr
                   key={d.id}
-                  className="border-b border-border-subtle last:border-b-0 hover:bg-surface-hover transition-colors cursor-pointer group"
+                  className="border-b border-white/[0.03] last:border-b-0 hover:bg-white/[0.02] transition-colors duration-200 cursor-pointer group"
                   onClick={() => navigate(`/documents/${d.id}`)}
                 >
-                  <td className="px-4 py-3.5">
-                    <code className="text-xs text-accent bg-accent-muted px-1.5 py-0.5 rounded font-mono">
+                  <td className="px-5 py-4">
+                    <code className="text-xs text-violet-400 bg-violet-500/10 px-2 py-1 rounded-lg font-mono">
                       {d.id.slice(0, 8)}
                     </code>
                   </td>
-                  <td className="px-4 py-3.5">
+                  <td className="px-5 py-4">
                     <span className="text-zinc-200 font-medium">{d.title || '(Untitled)'}</span>
                   </td>
-                  <td className="px-4 py-3.5">
-                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-md ring-1 capitalize ${DOC_TYPE_COLORS[d.doc_type] || DOC_TYPE_COLORS.other}`}>
+                  <td className="px-5 py-4">
+                    <span className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg border capitalize ${DOC_TYPE_COLORS[d.doc_type] || DOC_TYPE_COLORS.other}`}>
                       {d.doc_type}
                     </span>
                   </td>
-                  <td className="px-4 py-3.5">
-                    <span className="inline-flex items-center gap-1 text-muted-foreground">
-                      <Layers size={13} className="text-muted" />
+                  <td className="px-5 py-4">
+                    <span className="inline-flex items-center gap-1.5 text-zinc-400">
+                      <Layers size={13} className="text-zinc-600" />
                       {d.chunks_count}
                     </span>
                   </td>
-                  <td className="px-4 py-3.5 text-muted-foreground">
+                  <td className="px-5 py-4 text-zinc-400">
                     {new Date(d.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                   </td>
-                  <td className="px-4 py-3.5">
-                    <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <td className="px-5 py-4">
+                    <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 transition-all duration-200">
                       <Link
                         to={`/documents/${d.id}`}
-                        className="p-1.5 rounded-md text-muted-foreground hover:text-zinc-100 hover:bg-primary-tertiary"
+                        className="p-2 rounded-lg text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors"
                         onClick={(e) => e.stopPropagation()}
                         title="View"
                       >
-                        <ExternalLink size={15} />
+                        <ExternalLink size={14} />
                       </Link>
                       <button
-                        className="p-1.5 rounded-md text-muted hover:text-danger hover:bg-danger/10"
+                        className="p-2 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
                         onClick={(e) => handleDelete(d.id, e)}
                         title="Delete"
                       >
-                        <Trash2 size={15} />
+                        <Trash2 size={14} />
                       </button>
                     </div>
                   </td>
@@ -281,13 +293,13 @@ export default function DocumentList() {
       </div>
 
       {totalPages > 1 && (
-        <div className="flex items-center justify-between mt-4">
-          <span className="text-sm text-muted">
-            {total} total &middot; page {page} of {totalPages}
+        <div className="flex items-center justify-between mt-5">
+          <span className="text-sm text-zinc-500">
+            {total} total · page {page} of {totalPages}
           </span>
           <div className="flex items-center gap-1">
             <button
-              className="p-2 rounded-lg text-muted-foreground hover:text-zinc-100 hover:bg-surface-hover disabled:opacity-30 disabled:cursor-not-allowed"
+              className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.05] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               disabled={page <= 1}
               onClick={() => setPage((p) => p - 1)}
             >
@@ -299,10 +311,10 @@ export default function DocumentList() {
               return (
                 <button
                   key={p}
-                  className={`w-8 h-8 rounded-lg text-sm font-medium transition-colors
+                  className={`w-9 h-9 rounded-xl text-sm font-medium transition-all duration-200
                     ${p === page
-                      ? 'bg-accent text-white'
-                      : 'text-muted-foreground hover:text-zinc-100 hover:bg-surface-hover'
+                      ? 'btn-primary'
+                      : 'text-zinc-500 hover:text-white hover:bg-white/[0.05]'
                     }`}
                   onClick={() => setPage(p)}
                 >
@@ -311,7 +323,7 @@ export default function DocumentList() {
               )
             })}
             <button
-              className="p-2 rounded-lg text-muted-foreground hover:text-zinc-100 hover:bg-surface-hover disabled:opacity-30 disabled:cursor-not-allowed"
+              className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.05] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               disabled={page >= totalPages}
               onClick={() => setPage((p) => p + 1)}
             >
@@ -328,6 +340,25 @@ export default function DocumentList() {
             navigate(`/documents/${doc.id}`)
           }}
           onCancel={() => setShowCreateModal(false)}
+        />
+      )}
+      {showUploadModal && (
+        <UploadFileModal
+          onSuccess={(doc) => {
+            setShowUploadModal(false)
+            load()
+            navigate(`/documents/${doc.id}`)
+          }}
+          onCancel={() => setShowUploadModal(false)}
+        />
+      )}
+      {showCrawlModal && (
+        <CrawlWebsiteModal
+          onSuccess={() => {
+            setShowCrawlModal(false)
+            load()
+          }}
+          onCancel={() => setShowCrawlModal(false)}
         />
       )}
     </div>
@@ -393,47 +424,29 @@ function CreateDocumentModal({
     }
   }
 
-  const inputClass = `w-full px-3 py-2.5 rounded-lg border border-border bg-primary-secondary text-zinc-100 text-sm
-                      focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 placeholder:text-muted`
-
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[1000] p-4 animate-fade-in" onClick={onCancel}>
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-[1000] p-4 animate-fade-in" onClick={onCancel}>
       <div
-        className="bg-surface border border-border rounded-xl w-full max-w-[600px] max-h-[90vh] overflow-y-auto shadow-2xl animate-slide-up"
+        className="glass rounded-2xl w-full max-w-[600px] max-h-[90vh] overflow-y-auto shadow-2xl animate-slide-up gradient-border"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex justify-between items-center px-6 py-4 border-b border-border">
-          <h2 className="text-base font-semibold">Add document</h2>
-          <button
-            className="p-1.5 rounded-lg text-muted hover:text-zinc-100 hover:bg-surface-hover"
-            onClick={onCancel}
-            aria-label="Close"
-          >
+        <div className="flex justify-between items-center px-6 py-5 border-b border-white/[0.04]">
+          <h2 className="text-base font-semibold text-white">Add document</h2>
+          <button className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors" onClick={onCancel} aria-label="Close">
             <X size={18} />
           </button>
         </div>
         <div className="p-6 space-y-4">
-          {error && (
-            <div className="p-3 rounded-lg bg-danger/10 border border-danger/30 text-red-300 text-sm">
-              {error}
-            </div>
-          )}
+          {error && <div className="p-3.5 rounded-xl bg-danger/10 border border-danger/20 text-red-300 text-sm">{error}</div>}
           <div>
-            <label className="block text-sm font-medium text-muted-foreground mb-1.5">URL <span className="text-danger">*</span></label>
-            <div className="flex gap-2">
-              <input
-                type="url"
-                value={url}
-                onChange={(e) => { setUrl(e.target.value); setError(null) }}
-                placeholder="https://..."
-                className={inputClass}
-              />
+            <label className="block text-sm font-medium text-zinc-400 mb-2">URL <span className="text-danger">*</span></label>
+            <div className="flex gap-2.5">
+              <input type="url" value={url} onChange={(e) => { setUrl(e.target.value); setError(null) }} placeholder="https://..." className="flex-1 px-4 py-2.5 rounded-xl input-glass text-sm" />
               <button
                 type="button"
                 onClick={handleFetchFromUrl}
                 disabled={fetching || !url.trim()}
-                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg border border-border text-sm font-medium
-                         text-muted-foreground hover:text-zinc-100 hover:bg-surface-hover disabled:opacity-50 disabled:cursor-not-allowed"
+                className="btn-ghost shrink-0 inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Auto fetch content from URL"
               >
                 {fetching ? <Loader2 size={14} className="animate-spin-slow" /> : <Download size={14} />}
@@ -442,42 +455,239 @@ function CreateDocumentModal({
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-muted-foreground mb-1.5">Title</label>
-            <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Document title" className={inputClass} />
+            <label className="block text-sm font-medium text-zinc-400 mb-2">Title</label>
+            <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Document title" className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" />
           </div>
           <div>
-            <label className="block text-sm font-medium text-muted-foreground mb-1.5">Type</label>
-            <select value={docType} onChange={(e) => setDocType(e.target.value)} className={inputClass} aria-label="Type">
+            <label className="block text-sm font-medium text-zinc-400 mb-2">Type</label>
+            <select value={docType} onChange={(e) => setDocType(e.target.value)} className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" aria-label="Type">
               {DOC_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-muted-foreground mb-1.5">Content <span className="text-danger">*</span></label>
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Paste text or HTML content..."
-              className={inputClass}
-              rows={6}
-            />
+            <label className="block text-sm font-medium text-zinc-400 mb-2">Content <span className="text-danger">*</span></label>
+            <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="Paste text or HTML content..." className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" rows={6} />
           </div>
         </div>
-        <div className="flex justify-end gap-2 px-6 py-4 border-t border-border">
+        <div className="flex justify-end gap-2.5 px-6 py-5 border-t border-white/[0.04]">
+          <button className="btn-ghost px-4 py-2.5 rounded-xl text-sm font-medium" onClick={onCancel}>Cancel</button>
           <button
-            className="px-4 py-2.5 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:text-zinc-100 hover:bg-surface-hover"
-            onClick={onCancel}
-          >
-            Cancel
-          </button>
-          <button
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium
-                       hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed"
+            className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={handleSubmit}
             disabled={submitting}
           >
             {submitting && <Loader2 size={14} className="animate-spin-slow" />}
             {submitting ? 'Processing...' : 'Add document'}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function UploadFileModal({
+  onSuccess,
+  onCancel,
+}: {
+  onSuccess: (doc: Document) => void
+  onCancel: () => void
+}) {
+  const [file, setFile] = useState<File | null>(null)
+  const [title, setTitle] = useState('')
+  const [docType, setDocType] = useState('other')
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    setFile(f ?? null)
+    setError(null)
+    if (f) setTitle((prev) => prev || f.name.replace(/\.[^.]+$/, ''))
+  }
+
+  const handleSubmit = async () => {
+    if (!file) {
+      setError('Please select a file')
+      return
+    }
+    const ext = file.name.toLowerCase().split('.').pop()
+    if (!['txt', 'md', 'pdf'].includes(ext || '')) {
+      setError('Only .txt, .md, and .pdf files are supported')
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    try {
+      const doc = await documents.upload(file, {
+        title: title.trim() || undefined,
+        doc_type: docType,
+      })
+      onSuccess(doc)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Upload failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-[1000] p-4 animate-fade-in" onClick={onCancel}>
+      <div className="glass rounded-2xl w-full max-w-[480px] shadow-2xl animate-slide-up gradient-border" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-center px-6 py-5 border-b border-white/[0.04]">
+          <h2 className="text-base font-semibold text-white">Upload file</h2>
+          <button className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors" onClick={onCancel} aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="p-6 space-y-4">
+          {error && <div className="p-3.5 rounded-xl bg-danger/10 border border-danger/20 text-red-300 text-sm">{error}</div>}
+          <div>
+            <label className="block text-sm font-medium text-zinc-400 mb-2">File <span className="text-danger">*</span></label>
+            <input
+              type="file"
+              accept=".txt,.md,.pdf"
+              onChange={handleFileChange}
+              className="block w-full text-sm text-zinc-300 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-medium file:bg-violet-500/10 file:text-violet-400 hover:file:bg-violet-500/15 file:cursor-pointer file:transition-colors"
+            />
+            {file && (
+              <p className="mt-2 text-xs text-zinc-500">{file.name} ({(file.size / 1024).toFixed(1)} KB)</p>
+            )}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-zinc-400 mb-2">Title</label>
+            <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Document title (default: filename)" className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-zinc-400 mb-2">Type</label>
+            <select value={docType} onChange={(e) => setDocType(e.target.value)} className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" aria-label="Type">
+              {DOC_TYPES.map((t) => (<option key={t} value={t}>{t}</option>))}
+            </select>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2.5 px-6 py-5 border-t border-white/[0.04]">
+          <button className="btn-ghost px-4 py-2.5 rounded-xl text-sm font-medium" onClick={onCancel}>Cancel</button>
+          <button
+            className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={handleSubmit}
+            disabled={submitting || !file}
+          >
+            {submitting && <Loader2 size={14} className="animate-spin-slow" />}
+            {submitting ? 'Processing...' : 'Upload'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CrawlWebsiteModal({
+  onSuccess,
+  onCancel,
+}: {
+  onSuccess: () => void
+  onCancel: () => void
+}) {
+  const [url, setUrl] = useState('')
+  const [maxPages, setMaxPages] = useState(50)
+  const [maxDepth, setMaxDepth] = useState(3)
+  const [ingest, setIngest] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [crawling, setCrawling] = useState(false)
+  const [result, setResult] = useState<{ pages_crawled: number; pages_ingested: number; pages: Array<{ url: string; title: string }> } | null>(null)
+
+  const handleCrawl = async () => {
+    if (!url.trim()) {
+      setError('Please enter website URL')
+      return
+    }
+    setCrawling(true)
+    setError(null)
+    setResult(null)
+    try {
+      const res = await documents.crawlWebsite({
+        url: url.trim(),
+        max_pages: maxPages,
+        max_depth: maxDepth,
+        ingest,
+      })
+      setResult({
+        pages_crawled: res.pages_crawled,
+        pages_ingested: res.pages_ingested,
+        pages: res.pages,
+      })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Crawl failed')
+    } finally {
+      setCrawling(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-[1000] p-4 animate-fade-in" onClick={onCancel}>
+      <div className="glass rounded-2xl w-full max-w-[560px] max-h-[90vh] overflow-y-auto shadow-2xl animate-slide-up gradient-border" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-center px-6 py-5 border-b border-white/[0.04]">
+          <h2 className="text-base font-semibold text-white">Crawl website</h2>
+          <button className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors" onClick={onCancel} aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="p-6 space-y-4">
+          <p className="text-sm text-zinc-500">
+            Crawl all pages on a website from a seed URL. Only pages on the same domain will be crawled.
+          </p>
+          {error && <div className="p-3.5 rounded-xl bg-danger/10 border border-danger/20 text-red-300 text-sm">{error}</div>}
+          <div>
+            <label className="block text-sm font-medium text-zinc-400 mb-2">Website URL <span className="text-danger">*</span></label>
+            <input type="url" value={url} onChange={(e) => { setUrl(e.target.value); setError(null) }} placeholder="https://example.com" className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" disabled={crawling} />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-zinc-400 mb-2">Max pages</label>
+              <input type="number" min={1} max={500} value={maxPages} onChange={(e) => setMaxPages(Math.min(500, Math.max(1, parseInt(e.target.value, 10) || 50)))} className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" disabled={crawling} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-zinc-400 mb-2">Max depth</label>
+              <input type="number" min={1} max={10} value={maxDepth} onChange={(e) => setMaxDepth(Math.min(10, Math.max(1, parseInt(e.target.value, 10) || 3)))} className="w-full px-4 py-2.5 rounded-xl input-glass text-sm" disabled={crawling} />
+            </div>
+          </div>
+          <label className="flex items-center gap-2.5 text-sm text-zinc-400 cursor-pointer">
+            <input type="checkbox" checked={ingest} onChange={(e) => setIngest(e.target.checked)} disabled={crawling} className="rounded border-white/10 bg-transparent" />
+            Ingest crawled pages into knowledge base
+          </label>
+          {result && (
+            <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-sm animate-fade-in">
+              <p className="font-medium mb-1.5">Crawl complete</p>
+              <p>Crawled <strong>{result.pages_crawled}</strong> page(s), ingested <strong>{result.pages_ingested}</strong>.</p>
+              {result.pages.length > 0 && (
+                <div className="mt-3 max-h-40 overflow-y-auto space-y-1 text-xs">
+                  {result.pages.slice(0, 15).map((p) => (
+                    <div key={p.url} className="truncate text-emerald-200/80" title={p.url}>{p.title || p.url}</div>
+                  ))}
+                  {result.pages.length > 15 && <div className="text-zinc-500">... and {result.pages.length - 15} more</div>}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end gap-2.5 px-6 py-5 border-t border-white/[0.04]">
+          <button className="btn-ghost px-4 py-2.5 rounded-xl text-sm font-medium" onClick={onCancel}>
+            {result ? 'Close' : 'Cancel'}
+          </button>
+          {!result && (
+            <button
+              className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleCrawl}
+              disabled={crawling || !url.trim()}
+            >
+              {crawling && <Loader2 size={14} className="animate-spin-slow" />}
+              {crawling ? 'Crawling... (may take a few minutes)' : 'Start crawl'}
+            </button>
+          )}
+          {result && (
+            <button className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium" onClick={onSuccess}>
+              Done
+            </button>
+          )}
         </div>
       </div>
     </div>

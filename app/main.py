@@ -21,14 +21,18 @@ async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
     setup_logging(json_logs=True, log_level="INFO")
     logger.info("application_startup")
-    # Load prompts and intents from DB into cache
+    # Load prompts, intents, and LLM config from DB into cache
     try:
         from app.db.session import async_session_factory
+        from app.services.archi_config import refresh_cache as refresh_archi_config
         from app.services.branding_config import refresh_cache
+        from app.services.llm_config import refresh_cache as refresh_llm_config
         async with async_session_factory() as session:
             await refresh_cache(session)
+            await refresh_llm_config(session)
+            await refresh_archi_config(session)
     except Exception as e:
-        logger.warning("branding_config_startup_failed", error=str(e))
+        logger.warning("config_startup_failed", error=str(e))
     yield
     logger.info("application_shutdown")
 

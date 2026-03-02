@@ -1,7 +1,9 @@
 import axios, { type AxiosInstance } from 'axios'
 
 // Use full backend URL in dev (e.g. VITE_API_BASE=http://localhost:8000/v1), relative /v1 in prod (nginx proxies)
-const API_BASE = import.meta.env.VITE_API_BASE || '/v1'
+const API_BASE =
+  import.meta.env.VITE_API_BASE ||
+  (import.meta.env.DEV ? 'http://localhost:8000/v1' : '/v1')
 // Shared key for both API and Admin (X-API-Key + X-Admin-API-Key)
 const API_KEY = import.meta.env.VITE_API_KEY || import.meta.env.VITE_ADMIN_API_KEY || 'dev-key'
 
@@ -143,7 +145,45 @@ export interface CheckWhmcsCookiesResponse {
   }
 }
 
+export interface LLMConfig {
+  llm_model: string
+  llm_fallback_model: string
+  llm_api_key: string
+  llm_base_url: string
+}
+
+export interface LLMConfigUpdate {
+  llm_model?: string
+  llm_fallback_model?: string
+  llm_api_key?: string
+  llm_base_url?: string
+}
+
+export interface ArchiConfig {
+  language_detect_enabled: boolean
+  decision_router_use_llm: boolean
+  evidence_evaluator_enabled: boolean
+  self_critic_enabled: boolean
+  final_polish_enabled: boolean
+}
+
+export interface ArchiConfigUpdate {
+  language_detect_enabled?: boolean
+  decision_router_use_llm?: boolean
+  evidence_evaluator_enabled?: boolean
+  self_critic_enabled?: boolean
+  final_polish_enabled?: boolean
+}
+
 export const admin = {
+  getLLMConfig: () => http.get<LLMConfig>(`/admin/config/llm`).then((res) => res.data),
+  updateLLMConfig: (data: LLMConfigUpdate) =>
+    http.put<LLMConfig>(`/admin/config/llm`, data).then((res) => res.data),
+  getArchiConfig: () => http.get<ArchiConfig>(`/admin/config/archi`).then((res) => res.data),
+  updateArchiConfig: (data: ArchiConfigUpdate) =>
+    http.put<ArchiConfig>(`/admin/config/archi`, data).then((res) => res.data),
+  refreshConfigCache: () =>
+    http.post<{ status: string; message: string }>(`/admin/config/refresh-cache`).then((res) => res.data),
   ingestFromSource: (sourceDir = 'source') =>
     http.post<IngestFromSourceResponse>(`/admin/ingest-from-source`, null, {
       params: { source_dir: sourceDir },
@@ -185,6 +225,13 @@ export interface FetchFromUrlResponse {
   raw_html?: string | null
 }
 
+export interface CrawlWebsiteResponse {
+  status: string
+  pages_crawled: number
+  pages_ingested: number
+  pages: Array<{ url: string; title: string; doc_type: string }>
+}
+
 export const documents = {
   fetchFromUrl: (url: string) =>
     api<FetchFromUrlResponse>(`/documents/fetch-from-url`, {
@@ -215,6 +262,13 @@ export const documents = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  upload: (file: File, options?: { title?: string; doc_type?: string }) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    if (options?.title) fd.append('title', options.title)
+    fd.append('doc_type', options?.doc_type ?? 'other')
+    return http.post<Document>(`/documents/upload`, fd).then((r) => r.data)
+  },
   update: (id: string, data: { title?: string; doc_type?: string; effective_date?: string; metadata?: Record<string, unknown> }) =>
     api<Document>(`/documents/${id}`, {
       method: 'PATCH',
@@ -222,6 +276,16 @@ export const documents = {
     }),
   delete: (id: string) =>
     api<void>(`/documents/${id}`, { method: 'DELETE' }),
+  crawlWebsite: (params: {
+    url: string
+    max_pages?: number
+    max_depth?: number
+    ingest?: boolean
+  }) =>
+    api<CrawlWebsiteResponse>(`/documents/crawl-website`, {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }),
 }
 
 export interface Conversation {
@@ -247,6 +311,14 @@ export interface FlowDebug {
   reviewer_reasons?: string[]
   max_attempts_reached?: boolean
   intent_cache?: string
+  /** archi_v3: detected input language */
+  source_lang?: string
+  /** archi_v3: evidence evaluator result */
+  evidence_eval?: { relevance_score?: number; retry_needed?: boolean; coverage_gaps?: string[] }
+  /** archi_v3: answer was regenerated after self-critic fail */
+  self_critic_regenerated?: boolean
+  /** archi_v3: final polish was applied */
+  final_polish_applied?: boolean
 }
 
 export interface Message {

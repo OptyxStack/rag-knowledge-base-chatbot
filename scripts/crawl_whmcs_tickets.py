@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Crawl WHMCS ticket list and detail pages, save to source/tickets.json.
+Crawl WHMCS conversation list and detail pages, save to source/sample_conversations.json.
 
 Flow:
 1. Login to WHMCS (if WHMCS_EMAIL + WHMCS_PASSWORD set)
 2. Crawl list: supporttickets.php?filter=1, follow pagination (page=2, page=3...)
-3. Collect all ticket detail URLs
+3. Collect all conversation detail URLs
 4. Visit each detail page, extract subject, description, status, etc.
-5. Save to source/tickets.json
+5. Save to source/sample_conversations.json
 
 Usage:
   python scripts/crawl_whmcs_tickets.py
@@ -30,7 +30,7 @@ from app.crawlers.whmcs import WHMCSConfig, crawl_whmcs_tickets
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Crawl WHMCS tickets to tickets.json")
+    parser = argparse.ArgumentParser(description="Crawl WHMCS sample conversations to sample_conversations.json")
     parser.add_argument(
         "--base-url",
         default="https://greencloudvps.com/billing/greenvps",
@@ -48,7 +48,7 @@ def main():
     )
     parser.add_argument(
         "--output",
-        default="source/tickets.json",
+        default="source/sample_conversations.json",
         help="Output JSON path",
     )
     parser.add_argument(
@@ -96,7 +96,7 @@ def main():
     data = {
         "source": "whmcs",
         "crawled_from": config.base_url,
-        "tickets": [
+        "conversations": [
             {
                 "external_id": t["external_id"],
                 "subject": t["subject"],
@@ -115,7 +115,7 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-    print(f"Saved {len(tickets)} tickets to {out_path}")
+    print(f"Saved {len(tickets)} sample conversations to {out_path}")
 
 
 if __name__ == "__main__":

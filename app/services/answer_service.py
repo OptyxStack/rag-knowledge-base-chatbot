@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -9,9 +10,32 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.search.base import EvidenceChunk
 from app.services.branding_config import get_system_prompt, match_intent
+from app.services.evidence_hygiene import compute_hygiene
+from app.services.decision_router import route as decision_route, route_hybrid as decision_route_hybrid
+from app.services.evidence_quality import (
+    evaluate_quality,
+    infer_required_evidence,
+    passes_quality_gate,
+    QualityReport,
+)
+from app.services.llm_config import get_llm_fallback_model, get_llm_model
 from app.services.llm_gateway import LLMGateway, get_llm_gateway
 from app.services.orchestrator import Orchestrator
+from app.services.archi_config import (
+    get_decision_router_use_llm,
+    get_evidence_evaluator_enabled,
+    get_final_polish_enabled,
+    get_language_detect_enabled,
+    get_self_critic_enabled,
+)
+from app.services.language_detect import detect_language
+from app.services.normalizer import normalize as normalize_query
 from app.services.retrieval import EvidencePack, RetrievalService
+from app.services.evidence_evaluator import evaluate_evidence
+from app.services.retry_planner import plan_retry
+from app.services.self_critic import SelfCriticResult, critique as self_critic
+from app.services.final_polish import polish as final_polish
+from app.services.schemas import DecisionResult, QuerySpec
 from app.services.reviewer import ReviewerGate, ReviewerResult, ReviewerStatus
 
 logger = get_logger(__name__)
@@ -41,6 +65,14 @@ def _build_flow_debug(
     reviewer_reasons: list[str] | None = None,
     max_attempts_reached: bool = False,
     finish_reason: str | None = None,
+    quality_report: QualityReport | None = None,
+    retry_strategy_applied: dict[str, Any] | None = None,
+    query_spec: QuerySpec | None = None,
+    decision_router: DecisionResult | None = None,
+    source_lang: str | None = None,
+    evidence_eval_result: dict[str, Any] | None = None,
+    self_critic_regenerated: bool = False,
+    final_polish_applied: bool = False,
 ) -> dict[str, Any]:
     """Build debug dict for flow inspection (internal admin)."""
     debug: dict[str, Any] = {
@@ -70,8 +102,8 @@ def _build_flow_debug(
         debug["prompt_preview"] = {
             "system_length": len(system),
             "user_length": len(user),
-            "system_preview": system[:500] + ("..." if len(system) > 500 else ""),
-            "user_preview": user[:800] + ("..." if len(user) > 800 else ""),
+            "system_preview": system,
+            "user_preview": user,
         }
     if llm_tokens:
         debug["llm_tokens"] = llm_tokens
@@ -81,6 +113,35 @@ def _build_flow_debug(
         debug["max_attempts_reached"] = True
     if finish_reason:
         debug["finish_reason"] = finish_reason
+    if quality_report:
+        debug["quality_report"] = {
+            "quality_score": quality_report.quality_score,
+            "feature_scores": quality_report.feature_scores,
+            "missing_signals": quality_report.missing_signals,
+        }
+    if retry_strategy_applied:
+        debug["retry_strategy"] = retry_strategy_applied
+    if query_spec:
+        debug["query_spec"] = {
+            "intent": query_spec.intent,
+            "risk_level": query_spec.risk_level,
+            "is_ambiguous": query_spec.is_ambiguous,
+            "required_evidence": query_spec.required_evidence,
+            "canonical_query_en": query_spec.canonical_query_en,
+        }
+    if decision_router:
+        debug["decision_router"] = {
+            "decision": decision_router.decision,
+            "reason": decision_router.reason,
+        }
+    if source_lang:
+        debug["source_lang"] = source_lang
+    if evidence_eval_result:
+        debug["evidence_eval"] = evidence_eval_result
+    if self_critic_regenerated:
+        debug["self_critic_regenerated"] = True
+    if final_polish_applied:
+        debug["final_polish_applied"] = True
     return debug
 
 
@@ -142,8 +203,8 @@ class AnswerService:
         self._llm = llm or get_llm_gateway()
         self._reviewer = reviewer or ReviewerGate()
         self._orchestrator = orchestrator or Orchestrator(
-            primary_model=self._settings.llm_model,
-            fallback_model=self._settings.llm_fallback_model,
+            primary_model=get_llm_model(),
+            fallback_model=get_llm_fallback_model(),
         )
 
     async def generate(
@@ -169,18 +230,116 @@ class AnswerService:
                 },
             )
 
+        # Language detection (archi_v3, non-LLM)
+        source_lang = detect_language(query) if get_language_detect_enabled() else "en"
+
+        # Phase 2: Normalizer (QuerySpec, language-aware when use_llm)
+        query_spec: QuerySpec | None = None
+        if getattr(self._settings, "normalizer_enabled", True):
+            query_spec = await normalize_query(query, conversation_history, source_lang=source_lang)
+
+        # Effective query for retrieval/LLM: use canonical English when translated
+        effective_query = query
+        if query_spec and query_spec.canonical_query_en:
+            effective_query = query_spec.canonical_query_en
+
+        # Pre-retrieval gate: greetings/social need NO retrieval
+        if query_spec and query_spec.skip_retrieval and query_spec.canned_response:
+            return AnswerOutput(
+                decision="PASS",
+                answer=query_spec.canned_response,
+                followup_questions=[],
+                citations=[],
+                confidence=1.0,
+                debug={
+                    "trace_id": trace_id,
+                    "skip_retrieval": True,
+                    "intent": query_spec.intent,
+                    "source_lang": source_lang,
+                },
+            )
+
+        # Phase 3: Ambiguous short-circuit (no retrieval, no LLM)
+        if (
+            query_spec
+            and query_spec.is_ambiguous
+            and getattr(self._settings, "decision_router_enabled", True)
+        ):
+            dr = decision_route(query_spec, None, [], [], True)
+            return AnswerOutput(
+                decision=dr.decision,
+                answer=dr.answer,
+                followup_questions=dr.clarifying_questions,
+                citations=[],
+                confidence=0.0,
+                debug=_build_flow_debug(
+                    trace_id=trace_id,
+                    evidence_pack=None,
+                    evidence=[],
+                    messages=[],
+                    model_used=self._orchestrator.get_model_for_query(query),
+                    query_spec=query_spec,
+                    decision_router=dr,
+                    source_lang=source_lang,
+                ),
+            )
+
+        required_evidence = (
+            query_spec.required_evidence if query_spec else infer_required_evidence(query)
+        )
+
         max_attempts = self._settings.max_retrieval_attempts
         attempt = 1
         evidence_pack: EvidencePack | None = None
         last_reviewer_result: ReviewerResult | None = None
+        quality_report: QualityReport | None = None
+        retry_strategy_applied: dict[str, Any] | None = None
+        evidence_eval_result = None
+        retrieval_latency_ms = 0.0
+        latency_budget_ms = getattr(self._settings, "retrieval_latency_budget_ms", 0)
+        self_critic_regenerated = False
+        model = self._orchestrator.get_model_for_query(query)
+        messages: list[dict[str, str]] = []
+        llm_resp = None
+        answer = ""
+        followup: list[str] = []
+        citations: list[str] = []
+        confidence = 0.0
 
         while attempt <= max_attempts:
-            # Retrieve (with conversation context for better relevance)
-            evidence_pack = await self._retrieval.retrieve(
-                query,
-                conversation_history=conversation_history,
+            # Attempt 1: broad hybrid. Attempt 2: precision from Retry Planner (+ Evidence Evaluator)
+            retry_strategy = (
+                plan_retry(
+                    quality_report.missing_signals if quality_report else [],
+                    2,
+                    evidence_eval_result=evidence_eval_result,
+                )
+                if attempt == 2
+                else None
             )
+            if retry_strategy:
+                retry_strategy_applied = {
+                    "boost_patterns": retry_strategy.boost_patterns[:5],
+                    "filter_doc_types": retry_strategy.filter_doc_types,
+                    "context_expansion": retry_strategy.context_expansion,
+                    "suggested_query": retry_strategy.suggested_query,
+                }
+
+            t0 = time.monotonic()
+            evidence_pack = await self._retrieval.retrieve(
+                effective_query,
+                conversation_history=conversation_history,
+                retry_strategy=retry_strategy,
+                attempt=attempt,
+                query_spec=query_spec,
+            )
+            retrieval_latency_ms += (time.monotonic() - t0) * 1000
             evidence = evidence_pack.chunks
+
+            # Budget: stop retry if latency exceeded
+            if latency_budget_ms > 0 and retrieval_latency_ms > latency_budget_ms:
+                logger.warning("retrieval_latency_budget_exceeded", ms=retrieval_latency_ms, budget=latency_budget_ms)
+                break
 
             if not evidence:
                 return AnswerOutput(
@@ -196,13 +355,109 @@ class AnswerService:
                         messages=[],
                         model_used=self._orchestrator.get_model_for_query(query),
                         attempt=attempt,
+                        quality_report=quality_report,
+                        retry_strategy_applied=retry_strategy_applied,
+                        query_spec=query_spec,
+                        source_lang=source_lang,
                     ),
                 )
+
+            # LLM Evidence Evaluator (archi_v3) – advises Retry Planner for attempt 2
+            if get_evidence_evaluator_enabled():
+                evidence_eval_result = await evaluate_evidence(
+                    effective_query,
+                    query_spec,
+                    evidence,
+                    top_n=5,
+                )
+
+            # Evidence Hygiene (Phase 0.5): log only, no gating
+            hygiene = compute_hygiene(evidence)
+            if evidence_pack.retrieval_stats:
+                evidence_pack.retrieval_stats["evidence_signatures"] = {
+                    "pct_chunks_with_url": round(hygiene.pct_chunks_with_url, 1),
+                    "pct_chunks_with_number_unit": round(hygiene.pct_chunks_with_number_unit, 1),
+                    "pct_chunks_boilerplate_gt_06": round(hygiene.pct_chunks_boilerplate_gt_06, 1),
+                    "median_content_density": round(hygiene.median_content_density, 3),
+                }
+
+            # Evidence Quality Gate (Phase 1): retry if required features not met
+            quality_report = evaluate_quality(evidence, required_evidence)
+            try:
+                from app.core.metrics import evidence_quality_score
+                evidence_quality_score.observe(quality_report.quality_score)
+            except Exception:
+                pass
+            if not passes_quality_gate(quality_report, required_evidence) and attempt < max_attempts:
+                attempt += 1
+                continue
+
+            # Phase 3: Decision Router (before LLM) – hybrid when use_llm
+            if getattr(self._settings, "decision_router_enabled", True):
+                if get_decision_router_use_llm():
+                    dr = await decision_route_hybrid(
+                        query_spec,
+                        quality_report,
+                        evidence,
+                        required_evidence,
+                        passes_quality_gate(quality_report, required_evidence),
+                        query=effective_query,
+                    )
+                else:
+                    dr = decision_route(
+                        query_spec,
+                        quality_report,
+                        evidence,
+                        required_evidence,
+                        passes_quality_gate(quality_report, required_evidence),
+                    )
+                if dr.decision != "PASS":
+                    try:
+                        from app.core.metrics import decision_total
+                        decision_total.labels(decision=dr.decision).inc()
+                    except Exception:
+                        pass
+                    if dr.decision == "ESCALATE":
+                        try:
+                            from app.core.metrics import escalation_rate
+                            escalation_rate.inc()
+                        except Exception:
+                            pass
+                    evidence_eval_debug = (
+                        {
+                            "relevance_score": evidence_eval_result.relevance_score,
+                            "retry_needed": evidence_eval_result.retry_needed,
+                            "coverage_gaps": evidence_eval_result.coverage_gaps[:3],
+                        }
+                        if evidence_eval_result
+                        else None
+                    )
+                    return AnswerOutput(
+                        decision=dr.decision,
+                        answer=dr.answer,
+                        followup_questions=dr.clarifying_questions,
+                        citations=[],
+                        confidence=0.0,
+                        debug=_build_flow_debug(
+                            trace_id=trace_id,
+                            evidence_pack=evidence_pack,
+                            evidence=evidence,
+                            messages=[],
+                            model_used=self._orchestrator.get_model_for_query(query),
+                            attempt=attempt,
+                            quality_report=quality_report,
+                            retry_strategy_applied=retry_strategy_applied,
+                            query_spec=query_spec,
+                            decision_router=dr,
+                            source_lang=source_lang,
+                            evidence_eval_result=evidence_eval_debug,
+                        ),
+                    )
 
             # Build messages
             max_chars = self._settings.llm_max_evidence_chars
             evidence_block = _format_evidence_for_prompt(evidence, max_chars)
-            user_content = f"User question: {query}\n\nEvidence:\n{evidence_block}"
+            user_content = f"User question: {effective_query}\n\nEvidence:\n{evidence_block}"
             messages = [{"role": "system", "content": get_system_prompt()}]
             if conversation_history:
                 for m in conversation_history[-4:]:  # Last 4 messages (fit 16k context)
@@ -225,16 +480,20 @@ class AnswerService:
                     followup_questions=[],
                     citations=[],
                     confidence=0.0,
-                    debug={
-                        **_build_flow_debug(
-                            trace_id=trace_id,
-                            evidence_pack=evidence_pack,
-                            evidence=evidence,
-                            messages=messages,
-                            model_used=model,
-                        ),
-                        "error": str(e),
-                    },
+                        debug={
+                            **_build_flow_debug(
+                                trace_id=trace_id,
+                                evidence_pack=evidence_pack,
+                                evidence=evidence,
+                                messages=messages,
+                                model_used=model,
+                                quality_report=quality_report,
+                                retry_strategy_applied=retry_strategy_applied,
+                                query_spec=query_spec,
+                                source_lang=source_lang,
+                            ),
+                            "error": str(e),
+                        },
                 )
 
             # Detect truncation (model hit max_tokens)
@@ -251,6 +510,47 @@ class AnswerService:
             followup = parsed.get("followup_questions", [])
             citations = parsed.get("citations", [])
             confidence = float(parsed.get("confidence", 0.0))
+
+            # Self-Critic (archi_v3): regenerate on fail, max 1
+            gen_attempt = 1
+            self_critic_regenerated = False
+            max_gen_attempts = 1 + getattr(self._settings, "self_critic_regenerate_max", 1)
+            while gen_attempt <= max_gen_attempts:
+                if get_self_critic_enabled() and gen_attempt < max_gen_attempts:
+                    critique_result = await self_critic(effective_query, answer, citations, evidence)
+                    if critique_result and not critique_result.pass_:
+                        try:
+                            from app.core.metrics import self_critic_regenerate_total
+                            self_critic_regenerate_total.inc()
+                        except Exception:
+                            pass
+                        logger.info(
+                            "self_critic_fail",
+                            issues=critique_result.issues[:3],
+                            suggested_fix_preview=critique_result.suggested_fix[:150] if critique_result.suggested_fix else None,
+                            regenerating=True,
+                        )
+                        # Regenerate with feedback
+                        feedback = f"\n\nPrevious attempt had issues: {', '.join(critique_result.issues[:2])}. Fix: {critique_result.suggested_fix}"
+                        messages[-1]["content"] = messages[-1]["content"] + feedback
+                        try:
+                            llm_resp = await self._llm.chat(
+                                messages=messages,
+                                temperature=self._settings.llm_temperature,
+                                model=model,
+                            )
+                            parsed = _parse_llm_response(llm_resp.content)
+                            decision = parsed.get("decision", "ASK_USER")
+                            answer = parsed.get("answer", "")
+                            followup = parsed.get("followup_questions", [])
+                            citations = parsed.get("citations", [])
+                            confidence = float(parsed.get("confidence", 0.0))
+                        except Exception as e:
+                            logger.warning("self_critic_regenerate_failed", error=str(e))
+                        self_critic_regenerated = True
+                        gen_attempt += 1
+                        continue
+                break
 
             # Reviewer gate
             last_reviewer_result = self._reviewer.review(
@@ -270,6 +570,22 @@ class AnswerService:
                     decision_total.labels(decision="PASS").inc()
                 except Exception:
                     pass
+                # Final Polish (archi_v3)
+                final_polish_applied = False
+                if get_final_polish_enabled():
+                    polished = await final_polish(answer)
+                    if polished:
+                        answer = polished
+                        final_polish_applied = True
+                evidence_eval_debug = (
+                    {
+                        "relevance_score": evidence_eval_result.relevance_score,
+                        "retry_needed": evidence_eval_result.retry_needed,
+                        "coverage_gaps": evidence_eval_result.coverage_gaps[:3],
+                    }
+                    if evidence_eval_result
+                    else None
+                )
                 return AnswerOutput(
                     decision="PASS",
                     answer=answer,
@@ -285,6 +601,13 @@ class AnswerService:
                         llm_tokens={"input": llm_resp.input_tokens, "output": llm_resp.output_tokens},
                         attempt=attempt,
                         finish_reason=getattr(llm_resp, "finish_reason", None),
+                        quality_report=quality_report,
+                        retry_strategy_applied=retry_strategy_applied,
+                        query_spec=query_spec,
+                        source_lang=source_lang,
+                        evidence_eval_result=evidence_eval_debug,
+                        self_critic_regenerated=self_critic_regenerated,
+                        final_polish_applied=final_polish_applied,
                     ),
                 )
 
@@ -310,6 +633,19 @@ class AnswerService:
                         attempt=attempt,
                         reviewer_reasons=last_reviewer_result.reasons,
                         finish_reason=getattr(llm_resp, "finish_reason", None),
+                        quality_report=quality_report,
+                        retry_strategy_applied=retry_strategy_applied,
+                        query_spec=query_spec,
+                        source_lang=source_lang,
+                        evidence_eval_result=(
+                            {
+                                "relevance_score": evidence_eval_result.relevance_score,
+                                "retry_needed": evidence_eval_result.retry_needed,
+                            }
+                            if evidence_eval_result
+                            else None
+                        ),
+                        self_critic_regenerated=self_critic_regenerated,
                     ),
                 )
 
@@ -336,11 +672,27 @@ class AnswerService:
                         attempt=attempt,
                         reviewer_reasons=last_reviewer_result.reasons,
                         finish_reason=getattr(llm_resp, "finish_reason", None),
+                        quality_report=quality_report,
+                        retry_strategy_applied=retry_strategy_applied,
+                        query_spec=query_spec,
+                        source_lang=source_lang,
+                        evidence_eval_result=(
+                            {
+                                "relevance_score": evidence_eval_result.relevance_score,
+                                "retry_needed": evidence_eval_result.retry_needed,
+                            }
+                            if evidence_eval_result
+                            else None
+                        ),
+                        self_critic_regenerated=self_critic_regenerated,
                     ),
                 )
 
-            # RETRIEVE_MORE - try suggested queries
+            # RETRIEVE_MORE - prefer Retry Planner (missing_signals) over LLM suggested_queries
             if last_reviewer_result.suggested_queries and attempt < max_attempts:
+                if quality_report and quality_report.missing_signals:
+                    attempt += 1
+                    continue  # Loop will use retry_strategy from plan_retry(missing_signals, 2)
                 query = last_reviewer_result.suggested_queries[0]
                 attempt += 1
                 continue
@@ -354,16 +706,29 @@ class AnswerService:
             followup_questions=followup or ["What specifically would you like to know?"],
             citations=citations,
             confidence=confidence,
-            debug=_build_flow_debug(
-                trace_id=trace_id,
-                evidence_pack=evidence_pack,
-                evidence=evidence if evidence_pack else [],
-                messages=messages if evidence_pack else [],
-                model_used=model if evidence_pack else self._orchestrator.get_model_for_query(query),
-                llm_tokens={"input": llm_resp.input_tokens, "output": llm_resp.output_tokens} if evidence_pack and llm_resp else None,
-                attempt=attempt,
-                reviewer_reasons=last_reviewer_result.reasons if last_reviewer_result else None,
-                max_attempts_reached=True,
-                finish_reason=getattr(llm_resp, "finish_reason", None) if evidence_pack and llm_resp else None,
-            ),
+                debug=_build_flow_debug(
+                    trace_id=trace_id,
+                    evidence_pack=evidence_pack,
+                    evidence=evidence if evidence_pack else [],
+                    messages=messages if evidence_pack else [],
+                    model_used=model if evidence_pack else self._orchestrator.get_model_for_query(query),
+                    llm_tokens={"input": llm_resp.input_tokens, "output": llm_resp.output_tokens} if evidence_pack and llm_resp else None,
+                    attempt=attempt,
+                    reviewer_reasons=last_reviewer_result.reasons if last_reviewer_result else None,
+                    max_attempts_reached=True,
+                    finish_reason=getattr(llm_resp, "finish_reason", None) if evidence_pack and llm_resp else None,
+                    quality_report=quality_report,
+                    retry_strategy_applied=retry_strategy_applied,
+                    query_spec=query_spec,
+                    source_lang=source_lang,
+                    evidence_eval_result=(
+                        {
+                            "relevance_score": evidence_eval_result.relevance_score,
+                            "retry_needed": evidence_eval_result.retry_needed,
+                        }
+                        if evidence_eval_result
+                        else None
+                    ),
+                    self_critic_regenerated=self_critic_regenerated,
+                ),
         )

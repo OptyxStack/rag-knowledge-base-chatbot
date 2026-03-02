@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any
 
 from app.core.logging import get_logger
+from app.services.llm_config import get_llm_fallback_model, get_llm_model
 
 logger = get_logger(__name__)
 
@@ -44,7 +45,7 @@ class OrchestratorContext:
 def route_model(query: str, available_models: list[str]) -> str:
     """Route to model based on query. Use primary (stronger) model by default for accuracy."""
     if not available_models:
-        return "gpt-4o-mini"
+        return get_llm_model()
     # Primary model for all queries - better accuracy; fallback only on API failure
     return available_models[0]
 
@@ -52,10 +53,14 @@ def route_model(query: str, available_models: list[str]) -> str:
 class Orchestrator:
     """State machine orchestrator for support flow."""
 
-    def __init__(self, primary_model: str = "gpt-4o-mini", fallback_model: str = "gpt-3.5-turbo"):
-        self.primary_model = primary_model
-        self.fallback_model = fallback_model
-        self.models = [primary_model, fallback_model]
+    def __init__(
+        self,
+        primary_model: str | None = None,
+        fallback_model: str | None = None,
+    ):
+        self.primary_model = primary_model or get_llm_model()
+        self.fallback_model = fallback_model or get_llm_fallback_model()
+        self.models = [self.primary_model, self.fallback_model]
 
     def get_model_for_query(self, query: str) -> str:
         """Model routing based on query complexity."""

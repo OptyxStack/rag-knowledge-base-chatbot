@@ -18,6 +18,7 @@ import {
   Brain,
   AlertTriangle,
   ExternalLink,
+  Sparkles,
 } from 'lucide-react'
 
 export default function ConversationDetail() {
@@ -70,17 +71,17 @@ export default function ConversationDetail() {
   if (!id) return null
 
   if (loading) return (
-    <div className="flex items-center justify-center gap-2 py-20 text-muted animate-fade-in">
-      <Loader2 size={20} className="animate-spin-slow" />
-      <span>Loading conversation...</span>
+    <div className="flex items-center justify-center gap-3 py-24 animate-fade-in">
+      <Loader2 size={22} className="animate-spin-slow text-accent" />
+      <span className="text-zinc-500">Loading conversation...</span>
     </div>
   )
 
   if (error && !conv) {
     return (
       <div className="animate-fade-in">
-        <div className="p-3 rounded-lg mb-4 bg-danger/10 border border-danger/30 text-red-300 text-sm">{error}</div>
-        <Link to="/" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-zinc-100">
+        <div className="p-3.5 rounded-xl mb-5 bg-danger/10 border border-danger/20 text-red-300 text-sm">{error}</div>
+        <Link to="/" className="inline-flex items-center gap-2 text-sm text-zinc-500 hover:text-white transition-colors">
           <ArrowLeft size={16} /> Back to conversations
         </Link>
       </div>
@@ -91,38 +92,40 @@ export default function ConversationDetail() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-3rem)] lg:h-[calc(100vh-2rem)] animate-slide-up">
-      <header className="flex items-center gap-3 pb-4 border-b border-border mb-0 shrink-0">
+      <header className="flex items-center gap-3 pb-4 mb-0 shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
         <Link
           to="/"
-          className="p-2 rounded-lg text-muted-foreground hover:text-zinc-100 hover:bg-surface-hover transition-colors"
+          className="p-2 rounded-xl text-zinc-500 hover:text-white hover:bg-white/[0.05] transition-colors"
         >
           <ArrowLeft size={18} />
         </Link>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <h1 className="text-lg font-semibold truncate">Conversation</h1>
+            <h1 className="text-lg font-semibold text-white truncate">Conversation</h1>
             <CopyableId id={conv.id} />
           </div>
-          <div className="flex items-center gap-3 text-xs text-muted mt-0.5">
+          <div className="flex items-center gap-3 text-xs text-zinc-500 mt-0.5">
             <span className="capitalize">{conv.source_type} / {conv.source_id}</span>
-            <span>&middot;</span>
+            <span className="text-zinc-700">·</span>
             <span>{new Date(conv.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
-            <span>&middot;</span>
+            <span className="text-zinc-700">·</span>
             <span>{conv.messages.length} messages</span>
           </div>
         </div>
       </header>
 
       {error && (
-        <div className="p-3 rounded-lg my-3 bg-danger/10 border border-danger/30 text-red-300 text-sm animate-fade-in">
+        <div className="p-3.5 rounded-xl my-3 bg-danger/10 border border-danger/20 text-red-300 text-sm animate-fade-in">
           {error}
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto py-4 space-y-3">
+      <div className="flex-1 overflow-y-auto py-5 space-y-4">
         {conv.messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-16 text-muted">
-            <Bot size={32} className="mb-3 text-accent opacity-50" />
+          <div className="flex flex-col items-center justify-center py-20 text-zinc-500">
+            <div className="w-14 h-14 rounded-2xl glass-accent flex items-center justify-center mb-4 glow-sm">
+              <Sparkles size={24} className="text-violet-400" />
+            </div>
             <p className="text-sm">Send a message to start the conversation</p>
           </div>
         )}
@@ -131,12 +134,19 @@ export default function ConversationDetail() {
         ))}
         {sending && (
           <div className="flex items-start gap-3 animate-fade-in">
-            <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center shrink-0 mt-0.5">
-              <Bot size={16} className="text-accent" />
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5"
+              style={{ background: 'linear-gradient(135deg, rgba(124,58,237,0.2), rgba(59,130,246,0.15))' }}
+            >
+              <Bot size={16} className="text-violet-400" />
             </div>
-            <div className="bg-surface border border-border rounded-2xl rounded-tl-md px-4 py-3">
-              <div className="flex items-center gap-2 text-muted text-sm">
-                <Loader2 size={14} className="animate-spin-slow" />
+            <div className="glass rounded-2xl rounded-tl-lg px-4 py-3.5">
+              <div className="flex items-center gap-2.5 text-zinc-500 text-sm">
+                <div className="flex gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse-soft" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse-soft" style={{ animationDelay: '200ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse-soft" style={{ animationDelay: '400ms' }} />
+                </div>
                 Thinking...
               </div>
             </div>
@@ -145,21 +155,25 @@ export default function ConversationDetail() {
         <div ref={messagesEndRef} />
       </div>
 
-      <form className="flex items-end gap-2 pt-4 border-t border-border shrink-0" onSubmit={handleSend}>
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Type a message..."
-          disabled={sending}
-          maxLength={10000}
-          className="flex-1 px-4 py-3 rounded-xl border border-border bg-surface text-zinc-100 text-sm
-                     focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30
-                     placeholder:text-muted disabled:opacity-50"
-        />
+      <form
+        className="flex items-end gap-3 pt-4 shrink-0"
+        style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}
+        onSubmit={handleSend}
+      >
+        <div className="flex-1 relative">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Type a message..."
+            disabled={sending}
+            maxLength={10000}
+            className="w-full px-5 py-3.5 rounded-2xl input-glass text-sm disabled:opacity-50 pr-4"
+          />
+        </div>
         <button
           type="submit"
-          className="p-3 rounded-xl bg-accent text-white hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+          className="btn-primary p-3.5 rounded-2xl disabled:opacity-30 disabled:cursor-not-allowed"
           disabled={sending || !input.trim()}
         >
           {sending ? <Loader2 size={18} className="animate-spin-slow" /> : <Send size={18} />}
@@ -179,12 +193,12 @@ function CopyableId({ id }: { id: string }) {
   return (
     <button
       onClick={copy}
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-mono text-muted
-                 bg-surface-hover hover:text-accent transition-colors"
+      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-mono text-zinc-500
+                 bg-white/[0.03] hover:bg-white/[0.06] hover:text-violet-400 transition-colors"
       title="Copy ID"
     >
       {id.slice(0, 8)}...
-      {copied ? <Check size={11} className="text-success" /> : <Copy size={11} />}
+      {copied ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
     </button>
   )
 }
@@ -193,30 +207,40 @@ function MessageBubble({ message }: { message: Message }) {
   const isUser = message.role === 'user'
   const [showFlow, setShowFlow] = useState(false)
   const debug = message.debug
-  const hasDebug = debug && (debug.decision != null || debug.confidence != null || debug.trace_id)
+  const hasDebug = debug && (
+    debug.decision != null || debug.confidence != null || debug.trace_id ||
+    debug.source_lang || debug.evidence_eval || debug.self_critic_regenerated || debug.final_polish_applied
+  )
 
   return (
     <div className={`flex items-start gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
       <div
-        className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-0.5
-          ${isUser ? 'bg-accent' : 'bg-accent/15'}`}
+        className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5"
+        style={isUser
+          ? { background: 'linear-gradient(135deg, #7c3aed, #6d28d9)' }
+          : { background: 'linear-gradient(135deg, rgba(124,58,237,0.15), rgba(59,130,246,0.1))' }
+        }
       >
-        {isUser ? <User size={16} className="text-white" /> : <Bot size={16} className="text-accent" />}
+        {isUser ? <User size={15} className="text-white" /> : <Bot size={15} className="text-violet-400" />}
       </div>
 
       <div className={`max-w-[80%] min-w-0 ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
         <div
           className={`px-4 py-3 text-sm leading-relaxed
             ${isUser
-              ? 'bg-accent text-white rounded-2xl rounded-tr-md'
-              : 'bg-surface border border-border rounded-2xl rounded-tl-md'
+              ? 'rounded-2xl rounded-tr-lg text-white'
+              : 'glass rounded-2xl rounded-tl-lg'
             }`}
+          style={isUser
+            ? { background: 'linear-gradient(135deg, #7c3aed, #6d28d9)' }
+            : undefined
+          }
         >
           <div className="whitespace-pre-wrap break-words">{message.content}</div>
         </div>
 
-        <div className={`flex items-center gap-2 mt-1 px-1 ${isUser ? 'flex-row-reverse' : ''}`}>
-          <span className="text-[11px] text-muted">
+        <div className={`flex items-center gap-2 mt-1.5 px-1 ${isUser ? 'flex-row-reverse' : ''}`}>
+          <span className="text-[11px] text-zinc-600">
             {new Date(message.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
           </span>
         </div>
@@ -229,8 +253,9 @@ function MessageBubble({ message }: { message: Message }) {
                 href={c.source_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-accent-muted text-accent
-                           hover:bg-accent/20 transition-colors"
+                className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg
+                           bg-violet-500/10 text-violet-400 border border-violet-500/15
+                           hover:bg-violet-500/15 transition-colors"
               >
                 <ExternalLink size={10} />
                 {c.doc_type || c.source_url || c.chunk_id}
@@ -240,10 +265,10 @@ function MessageBubble({ message }: { message: Message }) {
         )}
 
         {!isUser && hasDebug && (
-          <div className="mt-2 w-full">
-            <div className="flex flex-wrap items-center gap-1.5 mb-1">
+          <div className="mt-2.5 w-full">
+            <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
               {debug.decision != null && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-accent-muted text-accent">
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-violet-500/10 text-violet-400 border border-violet-500/15">
                   <Zap size={10} />
                   {debug.decision}
                 </span>
@@ -252,14 +277,14 @@ function MessageBubble({ message }: { message: Message }) {
                 <ConfidenceBadge value={debug.confidence} />
               )}
               {debug.intent_cache && (
-                <span className="px-2 py-0.5 rounded-md text-[11px] bg-surface-hover text-muted-foreground">
+                <span className="px-2.5 py-1 rounded-lg text-[11px] bg-white/[0.03] text-zinc-400 border border-white/[0.05]">
                   cache: {debug.intent_cache}
                 </span>
               )}
             </div>
             <button
               type="button"
-              className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-muted-foreground transition-colors py-1"
+              className="inline-flex items-center gap-1.5 text-[11px] text-zinc-600 hover:text-zinc-400 transition-colors py-1"
               onClick={() => setShowFlow((v) => !v)}
             >
               {showFlow ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -275,9 +300,13 @@ function MessageBubble({ message }: { message: Message }) {
 
 function ConfidenceBadge({ value }: { value: number }) {
   const pct = Math.round(value * 100)
-  const color = pct >= 80 ? 'text-emerald-400 bg-emerald-500/10' : pct >= 50 ? 'text-amber-400 bg-amber-500/10' : 'text-red-400 bg-red-500/10'
+  const color = pct >= 80
+    ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/15'
+    : pct >= 50
+      ? 'text-amber-400 bg-amber-500/10 border-amber-500/15'
+      : 'text-red-400 bg-red-500/10 border-red-500/15'
   return (
-    <span className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${color}`}>
+    <span className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border ${color}`}>
       {pct}%
     </span>
   )
@@ -285,15 +314,15 @@ function ConfidenceBadge({ value }: { value: number }) {
 
 function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
   return (
-    <div className="mt-2 bg-primary border border-border rounded-xl overflow-hidden text-xs animate-slide-up">
+    <div className="mt-2 glass rounded-2xl overflow-hidden text-xs animate-slide-up">
       {(debug.decision != null || debug.confidence != null || debug.followup_questions?.length) && (
         <DebugSection icon={<Zap size={13} />} title="Decision & Confidence">
-          <div className="space-y-1 text-muted-foreground">
+          <div className="space-y-1.5 text-zinc-400">
             {debug.decision != null && <div>Decision: <span className="text-zinc-300">{debug.decision}</span></div>}
             {debug.confidence != null && <div>Confidence: <span className="text-zinc-300">{(debug.confidence * 100).toFixed(1)}%</span></div>}
             {debug.followup_questions && debug.followup_questions.length > 0 && (
               <div>
-                <div className="mb-0.5">Follow-up questions:</div>
+                <div className="mb-1">Follow-up questions:</div>
                 <ul className="list-disc pl-4 space-y-0.5">
                   {debug.followup_questions.map((q, i) => <li key={i} className="text-zinc-300">{q}</li>)}
                 </ul>
@@ -304,8 +333,8 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
       )}
 
       <DebugSection icon={<Brain size={13} />} title="Trace & Model">
-        <div className="space-y-0.5 text-muted-foreground">
-          {debug.trace_id && <div>Trace: <span className="font-mono text-zinc-400">{debug.trace_id}</span></div>}
+        <div className="space-y-1 text-zinc-400">
+          {debug.trace_id && <div>Trace: <span className="font-mono text-zinc-500">{debug.trace_id}</span></div>}
           {debug.model_used && <div>Model: <span className="text-zinc-300">{debug.model_used}</span></div>}
           {debug.attempt != null && <div>Attempt: <span className="text-zinc-300">{debug.attempt}</span></div>}
           {debug.intent_cache && <div>Intent cache: <span className="text-zinc-300">{debug.intent_cache}</span></div>}
@@ -314,7 +343,7 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
 
       {debug.query_rewrite && (
         <DebugSection icon={<Search size={13} />} title="Query Rewrite">
-          <div className="font-mono bg-primary-tertiary p-2.5 rounded-lg space-y-1 text-muted-foreground">
+          <div className="font-mono bg-black/20 p-3 rounded-xl space-y-1.5 text-zinc-400 text-[11px]">
             <div>Keyword: <span className="text-zinc-300">{debug.query_rewrite.keyword_query}</span></div>
             <div>Semantic: <span className="text-zinc-300">{debug.query_rewrite.semantic_query}</span></div>
           </div>
@@ -336,16 +365,16 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
         <DebugSection icon={<FileText size={13} />} title={`Evidence (${debug.evidence_summary.length} chunks)`}>
           <div className="space-y-2">
             {debug.evidence_summary.map((e, i) => (
-              <div key={i} className="p-2.5 bg-primary-tertiary rounded-lg">
-                <div className="flex items-center gap-2 mb-1">
-                  <a href={e.source_url} target="_blank" rel="noopener noreferrer" className="text-accent hover:text-accent-hover text-xs">
-                    {e.doc_type} &middot; {e.chunk_id.slice(0, 8)}
+              <div key={i} className="p-3 bg-black/20 rounded-xl">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <a href={e.source_url} target="_blank" rel="noopener noreferrer" className="text-violet-400 hover:text-violet-300 text-xs">
+                    {e.doc_type} · {e.chunk_id.slice(0, 8)}
                   </a>
                   {e.score != null && (
-                    <span className="text-muted text-[10px] ml-auto">score: {e.score.toFixed(3)}</span>
+                    <span className="text-zinc-600 text-[10px] ml-auto">score: {e.score.toFixed(3)}</span>
                   )}
                 </div>
-                <div className="text-muted-foreground whitespace-pre-wrap break-words text-[11px] max-h-32 overflow-y-auto leading-relaxed">
+                <div className="text-zinc-500 whitespace-pre-wrap break-words text-[11px] max-h-32 overflow-y-auto leading-relaxed">
                   {e.snippet}
                 </div>
               </div>
@@ -356,16 +385,16 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
 
       {debug.prompt_preview && (
         <DebugSection icon={<FileText size={13} />} title="Prompt Preview">
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             <div>
-              <div className="text-muted mb-1">System ({debug.prompt_preview.system_length} chars)</div>
-              <pre className="font-mono text-[11px] whitespace-pre-wrap break-words bg-primary-tertiary p-2.5 rounded-lg text-zinc-400 max-h-40 overflow-y-auto">
+              <div className="text-zinc-600 mb-1">System ({debug.prompt_preview.system_length} chars)</div>
+              <pre className="font-mono text-[11px] whitespace-pre-wrap break-words bg-black/20 p-3 rounded-xl text-zinc-500 max-h-96 overflow-y-auto">
                 {debug.prompt_preview.system_preview}
               </pre>
             </div>
             <div>
-              <div className="text-muted mb-1">User ({debug.prompt_preview.user_length} chars)</div>
-              <pre className="font-mono text-[11px] whitespace-pre-wrap break-words bg-primary-tertiary p-2.5 rounded-lg text-zinc-400 max-h-40 overflow-y-auto">
+              <div className="text-zinc-600 mb-1">User ({debug.prompt_preview.user_length} chars)</div>
+              <pre className="font-mono text-[11px] whitespace-pre-wrap break-words bg-black/20 p-3 rounded-xl text-zinc-500 max-h-96 overflow-y-auto">
                 {debug.prompt_preview.user_preview}
               </pre>
             </div>
@@ -384,14 +413,48 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
 
       {debug.reviewer_reasons && debug.reviewer_reasons.length > 0 && (
         <DebugSection icon={<AlertTriangle size={13} />} title="Reviewer">
-          <ul className="list-disc pl-4 space-y-0.5 text-muted-foreground">
+          <ul className="list-disc pl-4 space-y-0.5 text-zinc-400">
             {debug.reviewer_reasons.map((r, i) => <li key={i}>{r}</li>)}
           </ul>
         </DebugSection>
       )}
 
+      {(debug.source_lang || debug.evidence_eval || debug.self_critic_regenerated || debug.final_polish_applied) && (
+        <DebugSection icon={<Sparkles size={13} />} title="Archi v3">
+          <div className="space-y-1.5 text-zinc-400">
+            {debug.source_lang && (
+              <div>Source lang: <span className="text-zinc-300">{debug.source_lang}</span></div>
+            )}
+            {debug.evidence_eval && (
+              <div className="space-y-1">
+                {debug.evidence_eval.relevance_score != null && (
+                  <div>Relevance: <span className="text-zinc-300">{debug.evidence_eval.relevance_score.toFixed(2)}</span></div>
+                )}
+                {debug.evidence_eval.retry_needed != null && (
+                  <div>Retry needed: <span className="text-zinc-300">{debug.evidence_eval.retry_needed ? 'Yes' : 'No'}</span></div>
+                )}
+                {debug.evidence_eval.coverage_gaps && debug.evidence_eval.coverage_gaps.length > 0 && (
+                  <div>
+                    <div className="mb-0.5">Coverage gaps:</div>
+                    <ul className="list-disc pl-4 text-[11px]">
+                      {debug.evidence_eval.coverage_gaps.map((g, i) => <li key={i}>{g}</li>)}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+            {debug.self_critic_regenerated && (
+              <div className="text-amber-400">Self-critic: regenerated</div>
+            )}
+            {debug.final_polish_applied && (
+              <div className="text-violet-400">Final polish: applied</div>
+            )}
+          </div>
+        </DebugSection>
+      )}
+
       {debug.max_attempts_reached && (
-        <div className="px-4 py-2 bg-amber-500/10 border-t border-border text-amber-400 text-xs flex items-center gap-1.5">
+        <div className="px-4 py-3 bg-amber-500/10 border-t border-white/[0.04] text-amber-400 text-xs flex items-center gap-2">
           <AlertTriangle size={12} />
           Max retrieval attempts reached
         </div>
@@ -402,8 +465,8 @@ function FlowDebugPanel({ debug }: { debug: FlowDebug }) {
 
 function DebugSection({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
-    <div className="px-4 py-3 border-b border-border last:border-b-0">
-      <div className="flex items-center gap-1.5 text-muted font-medium mb-2">
+    <div className="px-4 py-3.5 border-b border-white/[0.04] last:border-b-0">
+      <div className="flex items-center gap-2 text-zinc-500 font-medium mb-2.5">
         {icon}
         {title}
       </div>
@@ -414,8 +477,8 @@ function DebugSection({ icon, title, children }: { icon: React.ReactNode; title:
 
 function StatPill({ label, value }: { label: string; value?: number | null }) {
   return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1 bg-primary-tertiary rounded-md">
-      <span className="text-muted">{label}</span>
+    <div className="flex items-center gap-2 px-3 py-1.5 bg-black/20 rounded-lg border border-white/[0.04]">
+      <span className="text-zinc-500">{label}</span>
       <span className="text-zinc-300 font-medium">{value ?? '-'}</span>
     </div>
   )

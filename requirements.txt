@@ -1,6 +1,7 @@
 # Core
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 
@@ -33,7 +34,9 @@ structlog>=24.1.0
 python-json-logger>=2.0.7
 
 # Utils
+langdetect>=1.0.9
 tiktoken>=0.5.2
+pypdf>=4.0.0
 beautifulsoup4>=4.12.0
 lxml>=5.1.0
 boto3>=1.34.0

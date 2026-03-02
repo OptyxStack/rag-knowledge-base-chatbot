@@ -134,6 +134,26 @@ class FetchFromUrlResponse(BaseModel):
     raw_html: str | None = None
 
 
+class CrawlWebsiteRequest(BaseModel):
+    url: str = Field(..., min_length=1, description="Seed URL to start crawling (e.g. https://example.com)")
+    max_pages: int = Field(default=50, ge=1, le=500, description="Maximum number of pages to crawl")
+    max_depth: int = Field(default=3, ge=1, le=10, description="Maximum link depth from seed URL")
+    ingest: bool = Field(default=True, description="If true, ingest crawled docs into knowledge base")
+
+
+class CrawledPage(BaseModel):
+    url: str
+    title: str
+    doc_type: str
+
+
+class CrawlWebsiteResponse(BaseModel):
+    status: str = "ok"
+    pages_crawled: int
+    pages_ingested: int
+    pages: list[CrawledPage] = Field(default_factory=list, description="List of crawled pages")
+
+
 # --- Admin / Ingest ---
 class IngestDocument(BaseModel):
     url: str = Field(..., description="Source URL")
@@ -168,6 +188,44 @@ class AppConfigResponse(BaseModel):
 
 class AppConfigUpdateRequest(BaseModel):
     value: str = Field(..., min_length=1)
+
+
+class LLMConfigResponse(BaseModel):
+    """LLM config (model, token, URL) - from DB with env fallback."""
+
+    llm_model: str
+    llm_fallback_model: str
+    llm_api_key: str
+    llm_base_url: str
+
+
+class LLMConfigUpdateRequest(BaseModel):
+    """Partial update for LLM config."""
+
+    llm_model: str | None = None
+    llm_fallback_model: str | None = None
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
+
+
+class ArchiConfigResponse(BaseModel):
+    """Archi v3 feature flags - from DB with env fallback."""
+
+    language_detect_enabled: bool
+    decision_router_use_llm: bool
+    evidence_evaluator_enabled: bool
+    self_critic_enabled: bool
+    final_polish_enabled: bool
+
+
+class ArchiConfigUpdateRequest(BaseModel):
+    """Partial update for archi v3 config."""
+
+    language_detect_enabled: bool | None = None
+    decision_router_use_llm: bool | None = None
+    evidence_evaluator_enabled: bool | None = None
+    self_critic_enabled: bool | None = None
+    final_polish_enabled: bool | None = None
 
 
 class IntentResponse(BaseModel):
@@ -275,7 +333,7 @@ class TicketApprovalUpdateRequest(BaseModel):
 
 class IngestTicketsToFileResponse(BaseModel):
     status: str = "ok"
-    path: str = Field(..., description="Path to tickets.json")
+    path: str = Field(..., description="Path to sample_conversations.json")
     count: int = Field(..., description="Number of approved tickets exported")
 
 

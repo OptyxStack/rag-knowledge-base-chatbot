@@ -1,13 +1,17 @@
 """Documents CRUD API routes."""
 
+import uuid
 from datetime import datetime
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
+    CrawlWebsiteRequest,
+    CrawlWebsiteResponse,
+    CrawledPage,
     DocumentCreateRequest,
     DocumentListResponse,
     DocumentResponse,
@@ -49,6 +53,55 @@ async def fetch_content_from_url(
         raise HTTPException(status_code=502, detail=f"Cannot fetch URL: {str(e)}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/crawl-website", response_model=CrawlWebsiteResponse)
+async def crawl_website(
+    body: CrawlWebsiteRequest,
+    db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(verify_api_key),
+):
+    """Crawl entire website from seed URL and optionally ingest into knowledge base."""
+    import asyncio
+    from app.services.web_crawler import crawl_website as do_crawl
+    from app.services.ingestion import IngestionService
+
+    try:
+        docs = await asyncio.to_thread(
+            do_crawl,
+            body.url,
+            max_pages=body.max_pages,
+            max_depth=body.max_depth,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Crawl failed: {str(e)}")
+
+    pages: list[CrawledPage] = [
+        CrawledPage(url=d["url"], title=d["title"], doc_type=d["doc_type"])
+        for d in docs
+    ]
+
+    ingested = 0
+    if body.ingest and docs:
+        svc = IngestionService()
+        for doc in docs:
+            doc_id = await svc.ingest_document(doc, db)
+            if doc_id:
+                ingested += 1
+                sync_document_create(
+                    source_url=doc["source_url"],
+                    title=doc["title"],
+                    content=doc.get("content", doc.get("raw_text", "")),
+                )
+
+    return CrawlWebsiteResponse(
+        status="ok",
+        pages_crawled=len(docs),
+        pages_ingested=ingested,
+        pages=pages,
+    )
 
 
 @router.get("", response_model=DocumentListResponse)
@@ -135,6 +188,81 @@ async def get_document(
         metadata=doc.doc_metadata,
         raw_content=doc.raw_content,
         cleaned_content=doc.cleaned_content,
+        created_at=doc.created_at,
+        updated_at=doc.updated_at,
+    )
+
+
+@router.post("/upload", response_model=DocumentResponse, status_code=201)
+async def upload_document(
+    file: UploadFile = File(...),
+    title: str | None = Form(None),
+    doc_type: str = Form("other"),
+    db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(verify_api_key),
+):
+    """Upload .txt, .md, or .pdf file and ingest into knowledge base."""
+    from app.services.file_parser import extract_text_from_file
+    from app.services.ingestion import IngestionService
+
+    filename = file.filename or "upload"
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    try:
+        raw_text = extract_text_from_file(content, filename, file.content_type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if len(raw_text.strip()) < 50:
+        raise HTTPException(
+            status_code=400,
+            detail="File content too short (min 50 chars). Check encoding or file content.",
+        )
+
+    url = f"file://{uuid.uuid4().hex[:8]}-{filename}"
+    doc_title = (title or filename).strip() or "Untitled"
+    doc_dict = {
+        "url": url,
+        "source_url": url,
+        "title": doc_title,
+        "raw_text": raw_text,
+        "doc_type": doc_type,
+        "source_file": CUSTOM_DOCS_FILE,
+    }
+
+    svc = IngestionService()
+    document_id = await svc.ingest_document(doc_dict, db)
+    if not document_id:
+        raise HTTPException(status_code=400, detail="Document skipped (duplicate or invalid)")
+
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one()
+
+    if not doc.source_file:
+        doc.source_file = CUSTOM_DOCS_FILE
+        await db.commit()
+        await db.refresh(doc)
+
+    sync_document_create(
+        source_url=doc.source_url,
+        title=doc.title,
+        content=doc.cleaned_content or doc.raw_content or "",
+    )
+
+    chunk_count = await db.execute(
+        select(func.count()).select_from(Chunk).where(Chunk.document_id == doc.id)
+    )
+    return DocumentResponse(
+        id=doc.id,
+        title=doc.title,
+        source_url=doc.source_url,
+        doc_type=doc.doc_type,
+        effective_date=doc.effective_date,
+        chunks_count=chunk_count.scalar() or 0,
+        source_file=doc.source_file,
+        metadata=doc.doc_metadata,
         created_at=doc.created_at,
         updated_at=doc.updated_at,
     )

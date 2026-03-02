@@ -12,6 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.schemas import (
     AppConfigResponse,
     AppConfigUpdateRequest,
+    ArchiConfigResponse,
+    ArchiConfigUpdateRequest,
+    LLMConfigResponse,
+    LLMConfigUpdateRequest,
     CheckWhmcsCookiesRequest,
     CheckWhmcsCookiesResponse,
     CrawlTicketsRequest,
@@ -32,7 +36,9 @@ from app.core.auth import verify_admin_api_key
 from app.core.logging import get_logger
 from app.db.models import AppConfig, Intent, Ticket
 from app.db.session import get_db
+from app.services.archi_config import refresh_cache as refresh_archi_config
 from app.services.branding_config import refresh_cache
+from app.services.llm_config import refresh_cache as refresh_llm_config
 
 logger = get_logger(__name__)
 
@@ -315,7 +321,7 @@ async def ingest_tickets_to_file(
     db: AsyncSession = Depends(get_db),
     _auth: str = Depends(verify_admin_api_key),
 ):
-    """Export approved tickets (approval_status=approved) to source/tickets.json. Only approved tickets are used."""
+    """Export approved tickets (approval_status=approved) to source/sample_conversations.json. Only approved tickets are used."""
     from datetime import datetime, timezone
 
     from app.services.ticket_sync import _resolve_source_dir
@@ -327,7 +333,7 @@ async def ingest_tickets_to_file(
 
     source_dir = _resolve_source_dir()
     source_dir.mkdir(parents=True, exist_ok=True)
-    out_path = source_dir / "tickets.json"
+    out_path = source_dir / "sample_conversations.json"
 
     def _row_to_dict(r):
         meta = dict(r.ticket_metadata or {})
@@ -348,8 +354,8 @@ async def ingest_tickets_to_file(
     data = {
         "source": "whmcs",
         "ingested_at": datetime.now(timezone.utc).isoformat(),
-        "tickets_count": len(rows),
-        "tickets": [_row_to_dict(r) for r in rows],
+        "conversations_count": len(rows),
+        "conversations": [_row_to_dict(r) for r in rows],
     }
     try:
         with open(out_path, "w", encoding="utf-8") as f:
@@ -369,13 +375,142 @@ async def ingest_tickets_to_file(
 # --- Branding config (prompts, intents) ---
 
 
+@router.get("/config/llm", response_model=LLMConfigResponse)
+async def get_llm_config(_auth: str = Depends(verify_admin_api_key)):
+    """Get current LLM config (model, token, URL) from cache/DB."""
+    from app.services.llm_config import (
+        get_llm_api_key,
+        get_llm_base_url,
+        get_llm_fallback_model,
+        get_llm_model,
+    )
+    return LLMConfigResponse(
+        llm_model=get_llm_model(),
+        llm_fallback_model=get_llm_fallback_model(),
+        llm_api_key=get_llm_api_key(),
+        llm_base_url=get_llm_base_url(),
+    )
+
+
+@router.put("/config/llm", response_model=LLMConfigResponse)
+async def update_llm_config(
+    body: LLMConfigUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(verify_admin_api_key),
+):
+    """Update LLM config. Only provided fields are updated."""
+    from app.db.models import generate_uuid
+
+    keys_to_update = []
+    if body.llm_model is not None:
+        keys_to_update.append(("llm_model", body.llm_model))
+    if body.llm_fallback_model is not None:
+        keys_to_update.append(("llm_fallback_model", body.llm_fallback_model))
+    if body.llm_api_key is not None:
+        keys_to_update.append(("llm_api_key", body.llm_api_key))
+    if body.llm_base_url is not None:
+        keys_to_update.append(("llm_base_url", body.llm_base_url))
+
+    for key, value in keys_to_update:
+        result = await db.execute(select(AppConfig).where(AppConfig.key == key).limit(1))
+        row = result.scalars().one_or_none()
+        if row:
+            row.value = value
+        else:
+            row = AppConfig(id=generate_uuid(), key=key, value=value)
+            db.add(row)
+    await db.flush()
+    await refresh_cache(db)
+    await refresh_llm_config(db)
+
+    from app.services.llm_config import (
+        get_llm_api_key,
+        get_llm_base_url,
+        get_llm_fallback_model,
+        get_llm_model,
+    )
+    return LLMConfigResponse(
+        llm_model=get_llm_model(),
+        llm_fallback_model=get_llm_fallback_model(),
+        llm_api_key=get_llm_api_key(),
+        llm_base_url=get_llm_base_url(),
+    )
+
+
+@router.get("/config/archi", response_model=ArchiConfigResponse)
+async def get_archi_config(_auth: str = Depends(verify_admin_api_key)):
+    """Get archi v3 feature flags from cache/DB."""
+    from app.services.archi_config import (
+        get_decision_router_use_llm,
+        get_evidence_evaluator_enabled,
+        get_final_polish_enabled,
+        get_language_detect_enabled,
+        get_self_critic_enabled,
+    )
+    return ArchiConfigResponse(
+        language_detect_enabled=get_language_detect_enabled(),
+        decision_router_use_llm=get_decision_router_use_llm(),
+        evidence_evaluator_enabled=get_evidence_evaluator_enabled(),
+        self_critic_enabled=get_self_critic_enabled(),
+        final_polish_enabled=get_final_polish_enabled(),
+    )
+
+
+@router.put("/config/archi", response_model=ArchiConfigResponse)
+async def update_archi_config(
+    body: ArchiConfigUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(verify_admin_api_key),
+):
+    """Update archi v3 feature flags. Only provided fields are updated."""
+    from app.db.models import generate_uuid
+
+    updates = [
+        ("language_detect_enabled", body.language_detect_enabled),
+        ("decision_router_use_llm", body.decision_router_use_llm),
+        ("evidence_evaluator_enabled", body.evidence_evaluator_enabled),
+        ("self_critic_enabled", body.self_critic_enabled),
+        ("final_polish_enabled", body.final_polish_enabled),
+    ]
+    for key, value in updates:
+        if value is None:
+            continue
+        str_val = "true" if value else "false"
+        result = await db.execute(select(AppConfig).where(AppConfig.key == key).limit(1))
+        row = result.scalars().one_or_none()
+        if row:
+            row.value = str_val
+        else:
+            row = AppConfig(id=generate_uuid(), key=key, value=str_val)
+            db.add(row)
+    await db.flush()
+    await refresh_archi_config(db)
+
+    from app.services.archi_config import (
+        get_decision_router_use_llm,
+        get_evidence_evaluator_enabled,
+        get_final_polish_enabled,
+        get_language_detect_enabled,
+        get_self_critic_enabled,
+    )
+    return ArchiConfigResponse(
+        language_detect_enabled=get_language_detect_enabled(),
+        decision_router_use_llm=get_decision_router_use_llm(),
+        evidence_evaluator_enabled=get_evidence_evaluator_enabled(),
+        self_critic_enabled=get_self_critic_enabled(),
+        final_polish_enabled=get_final_polish_enabled(),
+    )
+
+
 @router.post("/config/refresh-cache")
 async def refresh_config_cache(
     db: AsyncSession = Depends(get_db),
     _auth: str = Depends(verify_admin_api_key),
 ):
-    """Refresh in-memory cache for system prompt and intents from DB."""
+    """Refresh in-memory cache for system prompt, intents, LLM config, and archi config from DB."""
     await refresh_cache(db)
+    await refresh_llm_config(db)
+    await refresh_archi_config(db)
     return {"status": "ok", "message": "Cache refreshed"}
 
 
@@ -411,6 +546,7 @@ async def update_config(
         db.add(row)
     await db.flush()
     await refresh_cache(db)
+    await refresh_llm_config(db)
     return AppConfigResponse(key=row.key, value=row.value)
 
 

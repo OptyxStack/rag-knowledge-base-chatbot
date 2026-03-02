@@ -44,6 +44,73 @@ retrieval_miss_rate = Counter(
     "Retrievals that returned zero chunks",
 )
 
+# Evidence Quality (Phase 1)
+evidence_quality_score = Histogram(
+    "support_ai_evidence_quality_score",
+    "Evidence quality score (0-1) when gate triggers retry",
+    buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+)
+
+# archi_v3: Language detection
+language_detect_total = Counter(
+    "support_ai_language_detect_total",
+    "Language detection calls",
+    ["source_lang"],
+)
+language_detect_translated = Counter(
+    "support_ai_language_detect_translated_total",
+    "Queries translated from non-English",
+)
+
+# archi_v3: Evidence Evaluator
+evidence_evaluator_total = Counter(
+    "support_ai_evidence_evaluator_total",
+    "Evidence evaluator LLM calls",
+)
+evidence_evaluator_retry_needed = Counter(
+    "support_ai_evidence_evaluator_retry_needed_total",
+    "Evidence evaluator suggested retry",
+)
+evidence_evaluator_relevance_score = Histogram(
+    "support_ai_evidence_evaluator_relevance_score",
+    "Evidence relevance score from LLM (0-1)",
+    buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+)
+
+# archi_v3: Self-Critic
+self_critic_total = Counter(
+    "support_ai_self_critic_total",
+    "Self-critic LLM calls",
+)
+self_critic_fail_total = Counter(
+    "support_ai_self_critic_fail_total",
+    "Self-critic failed (regenerate triggered)",
+)
+self_critic_regenerate_total = Counter(
+    "support_ai_self_critic_regenerate_total",
+    "Answer regenerations after self-critic fail",
+)
+
+# archi_v3: Hybrid Decision Router
+decision_router_llm_total = Counter(
+    "support_ai_decision_router_llm_total",
+    "Decision router LLM calls (gray zone)",
+)
+decision_router_llm_override = Counter(
+    "support_ai_decision_router_llm_override_total",
+    "LLM overrode ASK_USER to PASS",
+)
+
+# archi_v3: Final Polish
+final_polish_total = Counter(
+    "support_ai_final_polish_total",
+    "Final polish LLM calls",
+)
+final_polish_applied = Counter(
+    "support_ai_final_polish_applied_total",
+    "Final polish successfully applied",
+)
+
 # Decisions
 decision_total = Counter(
     "support_ai_decision_total",

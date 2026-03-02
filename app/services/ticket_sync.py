@@ -1,11 +1,12 @@
-"""Reverse-sync ticket changes back to source JSON files.
+"""Reverse-sync sample conversation changes back to source JSON files.
 
-When tickets are created / updated / deleted via API, the corresponding
+When conversations are created / updated / deleted via API, the corresponding
 entry in the source JSON is kept in sync (like docs source_sync).
 
 Supported format
 ----------------
-- tickets: {"source": "whmcs", "tickets": [{"external_id", "subject", "description", ...}]}
+- conversations: {"source": "whmcs", "conversations": [{"external_id", "subject", "description", ...}]}
+- tickets: legacy key for backward compatibility
 """
 
 import json
@@ -16,7 +17,7 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-TICKETS_FILE = "tickets.json"
+SAMPLE_CONVERSATIONS_FILE = "sample_conversations.json"
 
 _SYNC_FIELDS = ("subject", "description", "status", "priority", "client_id", "email", "name")
 
@@ -62,8 +63,11 @@ def sync_ticket_update(
     name: str | None = None,
 ) -> bool:
     """Write changed fields back to the source JSON entry. Returns True on success."""
-    source_file = source_file or TICKETS_FILE
-    if source_file != TICKETS_FILE:
+    source_file = source_file or SAMPLE_CONVERSATIONS_FILE
+    # Map legacy tickets.json to sample_conversations.json
+    if source_file == "tickets.json":
+        source_file = SAMPLE_CONVERSATIONS_FILE
+    if source_file != SAMPLE_CONVERSATIONS_FILE:
         logger.debug("ticket_sync_skip_unknown_format", source_file=source_file)
         return False
 
@@ -74,7 +78,7 @@ def sync_ticket_update(
 
     try:
         data = _read_json(path)
-        entries = data.get("tickets", [])
+        entries = data.get("conversations", data.get("tickets", []))
         idx = _find_entry_index(entries, external_id)
         if idx < 0:
             logger.debug("ticket_sync_entry_not_found", external_id=external_id)
@@ -88,7 +92,7 @@ def sync_ticket_update(
                 changed = True
 
         if changed:
-            data["tickets"] = entries
+            data["conversations"] = entries
             _write_json(path, data)
             logger.info("ticket_sync_updated", source_file=source_file, external_id=external_id)
         return changed
@@ -107,18 +111,21 @@ def sync_ticket_create(
     email: str | None = None,
     name: str | None = None,
 ) -> bool:
-    """Append a new entry to tickets.json. Returns True on success."""
+    """Append a new entry to sample_conversations.json. Returns True on success."""
     source_dir = _resolve_source_dir()
     source_dir.mkdir(parents=True, exist_ok=True)
-    path = source_dir / TICKETS_FILE
+    path = source_dir / SAMPLE_CONVERSATIONS_FILE
 
     try:
         if path.exists():
             data = _read_json(path)
         else:
-            data = {"source": "whmcs", "tickets": []}
+            data = {"source": "whmcs", "conversations": []}
 
-        tickets: list[dict] = data.setdefault("tickets", [])
+        # Normalize: use "conversations" key (support legacy "tickets")
+        if "conversations" not in data and "tickets" in data:
+            data["conversations"] = data.pop("tickets")
+        tickets = data.setdefault("conversations", [])
 
         # Upsert by external_id
         for t in tickets:
@@ -135,7 +142,7 @@ def sync_ticket_create(
                 if name is not None:
                     t["name"] = name
                 _write_json(path, data)
-                logger.info("ticket_sync_upserted", source_file=TICKETS_FILE, external_id=external_id)
+                logger.info("ticket_sync_upserted", source_file=SAMPLE_CONVERSATIONS_FILE, external_id=external_id)
                 return True
 
         tickets.append({
@@ -149,7 +156,7 @@ def sync_ticket_create(
             "name": name,
         })
         _write_json(path, data)
-        logger.info("ticket_sync_created", source_file=TICKETS_FILE, external_id=external_id)
+        logger.info("ticket_sync_created", source_file=SAMPLE_CONVERSATIONS_FILE, external_id=external_id)
         return True
     except Exception as e:
         logger.warning("ticket_sync_create_failed", error=str(e))
@@ -158,8 +165,10 @@ def sync_ticket_create(
 
 def sync_ticket_delete(external_id: str, source_file: str | None) -> bool:
     """Remove the matching entry from the source JSON. Returns True on success."""
-    source_file = source_file or TICKETS_FILE
-    if source_file != TICKETS_FILE:
+    source_file = source_file or SAMPLE_CONVERSATIONS_FILE
+    if source_file == "tickets.json":
+        source_file = SAMPLE_CONVERSATIONS_FILE
+    if source_file != SAMPLE_CONVERSATIONS_FILE:
         return False
 
     path = _resolve_source_dir() / source_file
@@ -168,13 +177,13 @@ def sync_ticket_delete(external_id: str, source_file: str | None) -> bool:
 
     try:
         data = _read_json(path)
-        entries = data.get("tickets", [])
+        entries = data.get("conversations", data.get("tickets", []))
         idx = _find_entry_index(entries, external_id)
         if idx < 0:
             return False
 
         removed = entries.pop(idx)
-        data["tickets"] = entries
+        data["conversations"] = entries
         _write_json(path, data)
         logger.info(
             "ticket_sync_deleted",

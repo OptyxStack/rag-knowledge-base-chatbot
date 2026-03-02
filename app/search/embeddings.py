@@ -14,7 +14,10 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
     def __init__(self) -> None:
         self._settings = get_settings()
-        self._client = AsyncOpenAI(api_key=self._settings.openai_api_key)
+        kwargs: dict = {"api_key": self._settings.openai_api_key}
+        if self._settings.openai_base_url:
+            kwargs["base_url"] = self._settings.openai_base_url.rstrip("/")
+        self._client = AsyncOpenAI(**kwargs)
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts using OpenAI."""

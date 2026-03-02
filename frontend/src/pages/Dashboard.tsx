@@ -9,6 +9,7 @@ import {
   MessageSquare,
   Clock,
   RefreshCw,
+  Sparkles,
 } from 'lucide-react'
 
 const METRIC_ICONS: Record<string, typeof Activity> = {
@@ -19,22 +20,13 @@ const METRIC_ICONS: Record<string, typeof Activity> = {
   conversations: MessageSquare,
 }
 
-const METRIC_COLORS = [
-  'from-indigo-500/20 to-indigo-500/5 ring-indigo-500/20',
-  'from-emerald-500/20 to-emerald-500/5 ring-emerald-500/20',
-  'from-amber-500/20 to-amber-500/5 ring-amber-500/20',
-  'from-cyan-500/20 to-cyan-500/5 ring-cyan-500/20',
-  'from-purple-500/20 to-purple-500/5 ring-purple-500/20',
-  'from-rose-500/20 to-rose-500/5 ring-rose-500/20',
-]
-
-const METRIC_TEXT_COLORS = [
-  'text-indigo-400',
-  'text-emerald-400',
-  'text-amber-400',
-  'text-cyan-400',
-  'text-purple-400',
-  'text-rose-400',
+const CARD_STYLES = [
+  { gradient: 'from-violet-500/15 via-violet-500/5 to-transparent', glow: 'rgba(124,58,237,0.12)', iconColor: 'text-violet-400', borderColor: 'rgba(124,58,237,0.15)' },
+  { gradient: 'from-emerald-500/15 via-emerald-500/5 to-transparent', glow: 'rgba(16,185,129,0.12)', iconColor: 'text-emerald-400', borderColor: 'rgba(16,185,129,0.15)' },
+  { gradient: 'from-amber-500/15 via-amber-500/5 to-transparent', glow: 'rgba(245,158,11,0.12)', iconColor: 'text-amber-400', borderColor: 'rgba(245,158,11,0.15)' },
+  { gradient: 'from-cyan-500/15 via-cyan-500/5 to-transparent', glow: 'rgba(6,182,212,0.12)', iconColor: 'text-cyan-400', borderColor: 'rgba(6,182,212,0.15)' },
+  { gradient: 'from-blue-500/15 via-blue-500/5 to-transparent', glow: 'rgba(59,130,246,0.12)', iconColor: 'text-blue-400', borderColor: 'rgba(59,130,246,0.15)' },
+  { gradient: 'from-rose-500/15 via-rose-500/5 to-transparent', glow: 'rgba(244,63,94,0.12)', iconColor: 'text-rose-400', borderColor: 'rgba(244,63,94,0.15)' },
 ]
 
 export default function Dashboard() {
@@ -65,29 +57,27 @@ export default function Dashboard() {
   const entries = Object.entries(metrics).filter(([k]) => k.startsWith('support_ai_'))
 
   if (loading) return (
-    <div className="flex items-center justify-center gap-2 py-20 text-muted animate-fade-in">
-      <Loader2 size={20} className="animate-spin-slow" />
-      <span>Loading dashboard...</span>
+    <div className="flex items-center justify-center gap-3 py-24 animate-fade-in">
+      <Loader2 size={22} className="animate-spin-slow text-accent" />
+      <span className="text-zinc-500">Loading dashboard...</span>
     </div>
   )
 
   if (error && entries.length === 0) return (
     <div className="animate-fade-in">
-      <div className="p-3 rounded-lg mb-4 bg-danger/10 border border-danger/30 text-red-300 text-sm">{error}</div>
+      <div className="p-3.5 rounded-xl mb-5 bg-danger/10 border border-danger/20 text-red-300 text-sm">{error}</div>
     </div>
   )
 
   return (
     <div className="animate-slide-up">
-      <header className="flex items-center justify-between mb-6">
+      <header className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-          <p className="text-sm text-muted mt-1">Real-time metrics from Prometheus</p>
+          <h1 className="text-2xl font-bold tracking-tight text-white">Dashboard</h1>
+          <p className="text-sm text-zinc-500 mt-1.5">Real-time metrics from Prometheus</p>
         </div>
         <button
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-border text-sm font-medium
-                     text-muted-foreground hover:text-zinc-100 hover:bg-surface-hover transition-colors
-                     disabled:opacity-50"
+          className="btn-ghost inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50 transition-all"
           onClick={() => load(true)}
           disabled={refreshing}
         >
@@ -97,44 +87,54 @@ export default function Dashboard() {
       </header>
 
       {error && (
-        <div className="p-3 rounded-lg mb-4 bg-danger/10 border border-danger/30 text-red-300 text-sm animate-fade-in">
+        <div className="p-3.5 rounded-xl mb-5 bg-danger/10 border border-danger/20 text-red-300 text-sm animate-fade-in">
           {error}
         </div>
       )}
 
       {entries.length === 0 ? (
-        <div className="flex flex-col items-center py-20 text-muted">
-          <div className="w-14 h-14 rounded-2xl bg-accent-muted flex items-center justify-center mb-4">
-            <BarChart3 size={28} className="text-accent" />
+        <div className="flex flex-col items-center py-24 text-zinc-500">
+          <div className="w-16 h-16 rounded-2xl glass-accent flex items-center justify-center mb-5 glow-sm">
+            <BarChart3 size={30} className="text-violet-400" />
           </div>
-          <p className="font-medium text-zinc-300 mb-1">No metrics available</p>
+          <p className="font-semibold text-zinc-300 mb-1.5">No metrics available</p>
           <p className="text-sm">Metrics will appear once the system starts processing requests</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
           {entries.map(([key, value], index) => {
             const name = key.replace('support_ai_', '')
             const iconKey = Object.keys(METRIC_ICONS).find((k) => name.toLowerCase().includes(k))
             const Icon = iconKey ? METRIC_ICONS[iconKey] : TrendingUp
-            const colorIdx = index % METRIC_COLORS.length
-            const gradientClass = METRIC_COLORS[colorIdx]
-            const textColor = METRIC_TEXT_COLORS[colorIdx]
+            const style = CARD_STYLES[index % CARD_STYLES.length]
 
             return (
               <div
                 key={key}
-                className={`relative overflow-hidden bg-gradient-to-br ${gradientClass} ring-1 rounded-xl p-5 transition-all hover:scale-[1.02]`}
+                className={`relative overflow-hidden rounded-2xl p-5 transition-all duration-300 card-hover`}
+                style={{
+                  background: `linear-gradient(135deg, ${style.glow}, transparent 60%)`,
+                  border: `1px solid ${style.borderColor}`,
+                  backdropFilter: 'blur(12px)',
+                }}
               >
-                <div className="flex items-start justify-between mb-3">
-                  <div className={`w-9 h-9 rounded-lg bg-primary/40 flex items-center justify-center ${textColor}`}>
-                    <Icon size={18} />
+                <div className="absolute inset-0 dot-pattern opacity-30" />
+                <div className="relative">
+                  <div className="flex items-start justify-between mb-4">
+                    <div
+                      className={`w-10 h-10 rounded-xl flex items-center justify-center ${style.iconColor}`}
+                      style={{ background: 'rgba(0,0,0,0.3)' }}
+                    >
+                      <Icon size={19} />
+                    </div>
+                    <Sparkles size={14} className="text-zinc-600" />
                   </div>
-                </div>
-                <div className="text-3xl font-bold tracking-tight text-zinc-100 mb-1">
-                  {formatMetricValue(value)}
-                </div>
-                <div className="text-xs font-medium text-muted-foreground capitalize">
-                  {name.replace(/_/g, ' ')}
+                  <div className="text-3xl font-bold tracking-tight text-white mb-1.5">
+                    {formatMetricValue(value)}
+                  </div>
+                  <div className="text-xs font-medium text-zinc-500 capitalize">
+                    {name.replace(/_/g, ' ')}
+                  </div>
                 </div>
               </div>
             )

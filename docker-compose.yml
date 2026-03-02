@@ -42,6 +42,7 @@ services:
       - QDRANT_PORT=6333
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - LLM_MODEL=${LLM_MODEL:-gpt-5.2}
+      - RERANKER_PROVIDER=${RERANKER_PROVIDER:-custom}
       - LLM_MAX_TOKENS=2048
       - API_KEY=${API_KEY:-dev-key}
       - ADMIN_API_KEY=${ADMIN_API_KEY:-admin-key}
@@ -73,6 +74,7 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - RERANKER_PROVIDER=${RERANKER_PROVIDER:-custom}
       - OBJECT_STORAGE_URL=http://minio:9000
       - OBJECT_STORAGE_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - OBJECT_STORAGE_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
@@ -125,7 +127,7 @@ services:
       start_period: 60s
 
   qdrant:
-    image: qdrant/qdrant:v1.7.0
+    image: qdrant/qdrant:v1.12.0  # v1.10+ required for query_points API (Python client)
     ports:
       - "6333:6333"
     volumes:

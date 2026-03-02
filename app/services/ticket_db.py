@@ -31,7 +31,7 @@ async def upsert_ticket_from_crawl(t: dict) -> bool:
                 row.email = t.get("email")
                 row.name = t.get("name")
                 row.ticket_metadata = meta or None
-                row.source_file = t.get("source_file") or "tickets.json"
+                row.source_file = t.get("source_file") or "sample_conversations.json"
             else:
                 ticket = Ticket(
                     external_id=ext_id,
@@ -43,7 +43,7 @@ async def upsert_ticket_from_crawl(t: dict) -> bool:
                     email=t.get("email"),
                     name=t.get("name"),
                     ticket_metadata=meta or None,
-                    source_file=t.get("source_file") or "tickets.json",
+                    source_file=t.get("source_file") or "sample_conversations.json",
                 )
                 session.add(ticket)
             await session.commit()
