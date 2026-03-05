@@ -9,7 +9,13 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.search.base import EvidenceChunk
 
-from app.services.claim_parser import segment_claims, is_risky_claim, trim_unsupported_claims
+from app.services.claim_parser import (
+    segment_claims,
+    is_risky_claim,
+    is_policy_claim,
+    is_number_claim,
+    trim_unsupported_claims,
+)
 
 logger = get_logger(__name__)
 
@@ -140,10 +146,18 @@ def _build_claim_to_citation_map(
     has_valid_citations = bool(cited_ids & evidence_ids)
 
     claims = segment_claims(answer)
+    has_policy_citation = _has_policy_citation(citations, evidence)
+    # Policy claims + policy/tos citation: 1 citation is enough
+    # Number claims: still need 2 (price/specs need stronger support)
+
     for c in claims:
         claim_to_citation[c.text] = list(cited_ids & evidence_ids)
         if is_risky_claim(c.text):
             if not has_valid_citations:
+                unsupported.append(c.text)
+            elif is_policy_claim(c.text) and has_policy_citation:
+                weakly.append(c.text)  # 1 policy citation ok for policy claims
+            elif is_number_claim(c.text) and len(citations) < 2:
                 unsupported.append(c.text)
             elif len(citations) < 2:
                 unsupported.append(c.text)

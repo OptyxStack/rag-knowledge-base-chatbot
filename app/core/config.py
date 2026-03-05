@@ -84,6 +84,10 @@ class Settings(BaseSettings):
         default="pricing",
         description="Doc types to additionally fetch for plans/price queries. Empty to disable.",
     )
+    retrieval_policy_doc_types: str = Field(
+        default="",
+        description="Doc types for policy/refund/terms queries. Empty = search all (no filter). E.g. 'policy,tos' to restrict.",
+    )
     retrieval_ensure_doc_type_min: int = Field(
         default=2,
         ge=0,
@@ -213,6 +217,40 @@ class Settings(BaseSettings):
         description="Comma-separated OS types for os slot (e.g. windows,linux,macos). Empty = disabled.",
     )
 
+    # Query Rewriter (Phase 2: LLM-based when QuerySpec absent)
+    query_rewriter_use_llm: bool = Field(
+        default=True,
+        description="Use LLM for query rewriting when QuerySpec is absent. When False, uses rule-based heuristic.",
+    )
+    query_rewriter_cache_enabled: bool = Field(
+        default=True,
+        description="Cache query rewrite results in Redis to reduce LLM calls.",
+    )
+    query_rewriter_cache_ttl_seconds: int = Field(
+        default=3600,
+        ge=60,
+        le=86400 * 7,
+        description="Cache TTL for query rewrites (1h default, max 7 days).",
+    )
+
+    # Evidence Selector (Phase 1: coverage-aware selection)
+    evidence_selector_use_llm: bool = Field(
+        default=True,
+        description="Use LLM for coverage-aware evidence selection. When False, uses top-k.",
+    )
+    evidence_selector_fallback_top_k: int = Field(
+        default=8,
+        ge=4,
+        le=20,
+        description="Fallback top-k when LLM disabled or fails.",
+    )
+
+    # Chunk filter – before generate: LLM selects relevant chunks
+    chunk_filter_enabled: bool = Field(
+        default=True,
+        description="Before generate, LLM filters chunks to only those relevant to the question.",
+    )
+
     # Phase 3: Decision Router
     decision_router_enabled: bool = Field(default=True, description="Enable decision router before LLM (ASK_USER/ESCALATE without LLM call)")
     decision_router_use_llm: bool = Field(
@@ -251,6 +289,12 @@ class Settings(BaseSettings):
     # Phase 3: Budget controls
     retrieval_latency_budget_ms: int = Field(default=5000, description="Total retrieval latency budget across attempts (0=disabled)")
     retrieval_token_budget: int = Field(default=0, description="Token budget for normalizer LLM (0=unlimited, rule-based only)")
+
+    # Prompt layering: Core + Domain + Custom (internal bot, not multi-tenant)
+    prompt_domain: Literal["support", "legal", "generic"] = Field(
+        default="support",
+        description="Domain preset for system prompt: support (plans/pricing/escalation), legal (policy/high-risk), generic (minimal)",
+    )
 
     # Intent cache (who am i, what can you do - skip LLM)
     intent_cache_enabled: bool = Field(default=True, description="Return predefined answers for common intents")

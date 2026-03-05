@@ -97,7 +97,13 @@ def _derive_doc_types(
             if t.strip()
         )
     if profile == "policy_profile" or "policy_language" in hard:
-        preferred.extend(["policy", "tos"])
+        policy_types = [
+            t.strip()
+            for t in (settings.retrieval_policy_doc_types or "").split(",")
+            if t.strip()
+        ]
+        if policy_types:
+            preferred.extend(policy_types)
     if profile == "troubleshooting_profile" or "steps_structure" in hard:
         preferred.extend(["howto", "docs", "faq"])
     if "has_any_url" in hard:

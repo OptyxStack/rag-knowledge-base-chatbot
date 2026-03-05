@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { admin, type ArchiConfig, type LLMConfig } from '../api/client'
-import { Loader2, Cpu, Key, Link2, Save, RefreshCw, CheckCircle2, AlertCircle, Sparkles, FileText } from 'lucide-react'
+import { Loader2, Cpu, Key, Link2, Save, RefreshCw, CheckCircle2, AlertCircle, Sparkles, FileText, Globe } from 'lucide-react'
 
 export default function Settings() {
   const [, setConfig] = useState<LLMConfig | null>(null)
@@ -32,6 +32,8 @@ export default function Settings() {
 
   const [systemPrompt, setSystemPrompt] = useState('')
   const [savingPrompt, setSavingPrompt] = useState(false)
+  const [autoGenUrl, setAutoGenUrl] = useState('')
+  const [autoGenLoading, setAutoGenLoading] = useState(false)
 
   useEffect(() => {
     Promise.all([admin.getLLMConfig(), admin.getArchiConfig(), admin.getSystemPrompt()])
@@ -158,6 +160,25 @@ export default function Settings() {
       setError(e instanceof Error ? e.message : 'Failed to save archi config')
     } finally {
       setSavingArchi(false)
+    }
+  }
+
+  const handleAutoGenerate = async () => {
+    if (!autoGenUrl.trim()) return
+    setError(null)
+    setSuccess(null)
+    setAutoGenLoading(true)
+    try {
+      const res = await admin.autoGenerateBrandingFromDomain(autoGenUrl.trim())
+      const promptData = await admin.getSystemPrompt()
+      setSystemPrompt(promptData.value)
+      setSuccess(
+        `Đã tạo từ ${autoGenUrl}. Domain: ${res.prompt_domain}${res.app_name ? `, App: ${res.app_name}` : ''}. Đã lưu vào DB.`
+      )
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Auto-generate failed')
+    } finally {
+      setAutoGenLoading(false)
     }
   }
 
@@ -303,6 +324,34 @@ export default function Settings() {
         <p className="text-sm text-zinc-400 mb-5">
           System prompt gửi tới LLM khi tạo câu trả lời. Chỉnh sửa để tùy chỉnh hành vi chatbot. Lưu trong DB, cache được refresh sau khi lưu.
         </p>
+        <div className="mb-5 p-4 rounded-xl bg-violet-500/5 border border-violet-500/20">
+          <div className="flex items-center gap-2 mb-2">
+            <Globe size={16} className="text-violet-400" />
+            <span className="text-sm font-medium text-violet-200">Auto-generate từ domain</span>
+          </div>
+          <p className="text-xs text-zinc-500 mb-3">
+            Nhập URL website, AI sẽ crawl và tạo persona, domain preset, custom rules rồi lưu vào DB.
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="url"
+              value={autoGenUrl}
+              onChange={(e) => setAutoGenUrl(e.target.value)}
+              placeholder="https://example.com"
+              className="flex-1 px-4 py-2 rounded-xl input-glass text-sm"
+              disabled={autoGenLoading}
+            />
+            <button
+              type="button"
+              onClick={handleAutoGenerate}
+              disabled={autoGenLoading || !autoGenUrl.trim()}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-white bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {autoGenLoading ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+              {autoGenLoading ? 'Đang tạo...' : 'Tạo từ URL'}
+            </button>
+          </div>
+        </div>
         <form onSubmit={handleSavePrompt} className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-zinc-500 mb-1.5">Prompt</label>

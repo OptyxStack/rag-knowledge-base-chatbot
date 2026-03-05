@@ -106,7 +106,7 @@ def test_reviewer_allows_bounded_pass_weak_with_single_citation(mock_evidence_ch
 
 
 def test_reviewer_trim_unsupported_claims_when_mixed(mock_evidence_chunks):
-    """Workstream 5: When answer has supported + unsupported claims, trim unsupported and pass."""
+    """Workstream 5: Trim unsupported ($100) but keep policy claim (30 days) when policy citation exists."""
     gate = ReviewerGate()
     result = gate.review(
         decision="PASS",
@@ -121,7 +121,7 @@ def test_reviewer_trim_unsupported_claims_when_mixed(mock_evidence_chunks):
     assert result.status == ReviewerStatus.TRIM_UNSUPPORTED
     assert result.trimmed_answer
     assert "$100" not in result.trimmed_answer
-    assert "30 days" not in result.trimmed_answer
+    assert "30 days" in result.trimmed_answer  # policy claim kept (supported by policy citation)
     assert result.unsupported_claims
 
 

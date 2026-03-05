@@ -59,6 +59,21 @@ def build_answer_plan(
     quality_report: QualityReport | None,
 ) -> AnswerPlan:
     """Build a minimal lane-aware answer plan for the current generation pass."""
+    # Routine question (skip_retrieval): no evidence, greeting plan
+    if query_spec and getattr(query_spec, "skip_retrieval", False):
+        return AnswerPlan(
+            lane="PASS_STRONG",
+            allowed_claim_scope="full",
+            must_include=[
+                "Respond with a friendly, concise greeting. No evidence provided - this is a social message.",
+            ],
+            must_avoid=[],
+            required_citations=[],
+            output_blocks=["direct_answer"],
+            tone_policy="friendly",
+            generation_constraints={"confidence_cap": 1.0},
+        )
+
     lane = decision_router.resolved_lane() if decision_router else "PASS_STRONG"
     if lane not in ("PASS_STRONG", "PASS_WEAK"):
         lane = "PASS_STRONG"
@@ -247,11 +262,13 @@ def _pick_intent_aligned_rewrite(
         return None, ""
 
     filter_doc_types = getattr(retry_strategy, "filter_doc_types", None) or []
-    intent = getattr(query_spec, "intent", "") if query_spec else ""
+    hard = set(getattr(query_spec, "hard_requirements", None) or []) if query_spec else set()
+    reqs = set(getattr(query_spec, "required_evidence", None) or []) if query_spec else set()
+    needs_policy = "policy_language" in hard or "policy_language" in reqs
     base_lower = base_query.lower().strip()
 
     # Policy/tos retry: prefer policy-focused phrases
-    if set(filter_doc_types) & {"policy", "tos"} or intent == "policy":
+    if set(filter_doc_types) & {"policy", "tos"} or needs_policy:
         policy_terms = ("policy", "terms", "refund", "cancellation policy", "terms of service")
         drift_terms = ("order", "buy", "checkout")  # can match transaction pages
         for c in rewrite_candidates[1:]:  # skip base

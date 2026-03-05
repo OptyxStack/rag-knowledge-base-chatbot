@@ -37,16 +37,17 @@ def build_evidence_set(
     query_spec: QuerySpec | None,
     plan: RetrievalPlan | None,
     pool: CandidatePool | None = None,
+    coverage_map: dict[str, str] | None = None,
 ) -> EvidenceSet:
     """Build EvidenceSet from reranked chunks.
 
-    - Primary chunks: top by score, or those satisfying hard requirements
+    - coverage_map: from Evidence Selector (LLM) – requirement -> chunk_id. When present,
+      used for covered_requirements and primary chunks; avoids regex heuristic.
+    - Primary chunks: from coverage_map when available, else first 3 by rank
     - Supporting chunks: remaining selected chunks
-    - covered/uncovered_requirements from query_spec
     """
     hard = set()
     soft = set()
-    slots = set()
     if query_spec:
         hard = {
             str(x)
@@ -59,6 +60,8 @@ def build_evidence_set(
             if isinstance(x, str)
         }
         resolved = query_spec.resolved_slots or {}
+    else:
+        resolved = {}
     slot_names = set(resolved.keys())
 
     evidence_chunks: list[EvidenceChunk] = []
@@ -66,6 +69,7 @@ def build_evidence_set(
     supporting_ids: list[str] = []
     covered_req: set[str] = set()
     covered_slots: set[str] = set()
+    chunk_ids_in_reranked = {c.chunk_id for c, _ in reranked}
 
     for chunk, score in reranked:
         snippet = (chunk.chunk_text or "")[:500]
@@ -81,9 +85,14 @@ def build_evidence_set(
         )
         evidence_chunks.append(ec)
 
-        for req in hard | soft:
-            if _chunk_satisfies_requirement(chunk, req):
-                covered_req.add(req)
+        if coverage_map:
+            for req, cid in coverage_map.items():
+                if cid == chunk.chunk_id and req in (hard | soft):
+                    covered_req.add(req)
+        else:
+            for req in hard | soft:
+                if _chunk_satisfies_requirement(chunk, req):
+                    covered_req.add(req)
         text_lower = (chunk.chunk_text or "").lower()
         for slot_name, slot_val in resolved.items():
             if slot_val and str(slot_val).lower() in text_lower:
@@ -92,13 +101,26 @@ def build_evidence_set(
     uncovered_req = (hard | soft) - covered_req
     uncovered_slots = slot_names - covered_slots
 
-    # Primary: first 3 or those that uniquely satisfy a requirement
-    for i, (chunk, _) in enumerate(reranked):
-        cid = chunk.chunk_id
-        if i < 3:
-            primary_ids.append(cid)
-        else:
-            supporting_ids.append(cid)
+    # Primary: from coverage_map when available, else first 3 by rank
+    if coverage_map:
+        coverage_primary = [
+            cid for req, cid in coverage_map.items()
+            if cid in chunk_ids_in_reranked
+        ]
+        primary_ids = list(dict.fromkeys(coverage_primary))
+        for chunk, _ in reranked:
+            if chunk.chunk_id not in primary_ids and len(primary_ids) < 3:
+                primary_ids.append(chunk.chunk_id)
+        for chunk, _ in reranked:
+            if chunk.chunk_id not in primary_ids:
+                supporting_ids.append(chunk.chunk_id)
+    else:
+        for i, (chunk, _) in enumerate(reranked):
+            cid = chunk.chunk_id
+            if i < 3:
+                primary_ids.append(cid)
+            else:
+                supporting_ids.append(cid)
 
     # Trust mix: doc_type distribution
     trust_mix: dict[str, float] = {}

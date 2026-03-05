@@ -254,6 +254,14 @@ export interface SystemPromptConfig {
   value: string
 }
 
+export interface AutoGenerateBrandingResponse {
+  status: string
+  persona: string
+  prompt_domain: string
+  custom_prompt_rules: string
+  app_name: string
+}
+
 export const admin = {
   getLLMConfig: () => http.get<LLMConfig>(`/admin/config/llm`).then((res) => res.data),
   updateLLMConfig: (data: LLMConfigUpdate) =>
@@ -265,6 +273,10 @@ export const admin = {
     http.get<SystemPromptConfig>(`/admin/config/system-prompt`).then((res) => res.data),
   updateSystemPrompt: (data: { value: string }) =>
     http.put<SystemPromptConfig>(`/admin/config/system-prompt`, data).then((res) => res.data),
+  autoGenerateBrandingFromDomain: (url: string) =>
+    http
+      .post<AutoGenerateBrandingResponse>(`/admin/config/auto-generate-from-domain`, { url })
+      .then((res) => res.data),
   refreshConfigCache: () =>
     http.post<{ status: string; message: string }>(`/admin/config/refresh-cache`).then((res) => res.data),
   ingestFromSource: (sourceDir = 'source') =>

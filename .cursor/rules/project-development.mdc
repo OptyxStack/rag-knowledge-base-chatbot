@@ -1,0 +1,92 @@
+---
+description: Project development principles – avoid hardcoding, keep rules general
+alwaysApply: true
+---
+
+# Project Development Principles
+
+## Taboos
+
+### 1. No hardcoded data
+
+- **Avoid:** Fixed values in code (company name, URLs, prices, product names, policy text).
+- **Prefer:** Config, env, database, or config files.
+
+```python
+# ❌ BAD
+COMPANY = "GreenCloud"
+REFUND_DAYS = 7
+
+# ✅ GOOD
+company = get_settings().app_name
+refund_days = get_settings().refund_grace_days  # from config/env
+```
+
+### 2. No narrow or niche rules
+
+- **Avoid:** Rules that apply only to one product, one language, or one tenant.
+- **Prefer:** General rules that scale across domains.
+
+```python
+# ❌ BAD – VPS only
+if "vps" in query: ...
+
+# ✅ GOOD – use slot/product_type from config
+product_types = get_settings().normalizer_slot_product_types.split(",")
+if product_type in product_types: ...
+```
+
+### 3. Rule data must be extensible
+
+- **Avoid:** Fixed lists, hardcoded keyword lists in code.
+- **Prefer:** Config-driven, slot-based, or from KB/DB.
+
+### 4. No rigid keyword rules for intent/evidence
+
+- **Avoid:** Keyword matching for intent, required_evidence, or quality (e.g. `if "refund" in query: required.append("policy_language")`).
+- **Prefer:** LLM as orchestrator—intent, required_evidence, and quality determined by LLM.
+
+```python
+# ❌ BAD – rule-based keyword inference
+if any(kw in q for kw in ["refund", "policy"]):
+    required.append("policy_language")
+
+# ✅ GOOD – from normalizer (LLM) or evidence quality (LLM)
+required_evidence = query_spec.required_evidence  # from LLM
+```
+
+### 5. No rule-based evidence quality
+
+- **Avoid:** Regex, string checks, or fixed patterns for evidence quality (e.g. `_has_numbers_units`, `_score_policy_language`).
+- **Prefer:** LLM evaluates quality; return pass/fail, confidence, coverage from LLM.
+
+## Evidence & Hard Requirements Scope
+
+### Trust LLM; no code override
+
+- **required_evidence** from LLM drives hard_requirements. No code override based on user_goal.
+- LLM infers when transaction_link is needed (order/buy link) vs not (pricing, refund policy).
+- Keeps logic generic and preserves LLM reasoning across all evidence types.
+
+### LLM prompt guidance for required_evidence
+
+- `transaction_link`: when user wants order/buy/checkout link. NOT for pure pricing (pricing pages often lack order links) or refund/policy (user needs policy text, not link).
+- Other evidence types: infer from query intent.
+
+### No narrow rules when LLM decides
+
+- If a decision is delegated to LLM (doc types, required_evidence, quality, retry strategy), do not add narrow rules like "when X then Y". Let the LLM reason from the query.
+- Avoid rules that reduce the LLM's ability to think generically (e.g. "when product in query include pricing").
+
+### Retry strategy
+
+- Retry strategy comes from Evidence Evaluator LLM (retry_boost_terms, retry_doc_types, suggested_query) when retry_needed. No hardcoded MISSING_SIGNAL_STRATEGIES.
+- Fallback: suggested_query from query_spec.rewrite_candidates (normalizer LLM).
+
+## Checklist when adding new logic
+
+- [ ] Can it be changed via config/env without editing code?
+- [ ] Does the logic apply to other domains/tenants?
+- [ ] Are magic strings/numbers avoided?
+- [ ] Is LLM used for intent/evidence/quality instead of keyword rules?
+- [ ] Does evidence scope trust LLM (no hardcoded user_goal override for required_evidence)?

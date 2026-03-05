@@ -6,7 +6,6 @@ from app.search.base import EvidenceChunk
 from app.services.evidence_hygiene import compute_hygiene
 from app.services.evidence_quality import (
     evaluate_quality,
-    infer_required_evidence,
     passes_quality_gate,
     QualityReport,
 )
@@ -32,30 +31,14 @@ def test_compute_hygiene_with_chunks():
     assert sigs.pct_chunks_boilerplate_gt_06 >= 0
 
 
-def test_evaluate_quality_empty():
-    report = evaluate_quality([], ["numbers_units"])
+@pytest.mark.asyncio
+async def test_evaluate_quality_empty():
+    """Empty chunks returns fail report without LLM call."""
+    report = await evaluate_quality("test query", [], ["numbers_units"], hard_requirements=["numbers_units"])
     assert report.quality_score == 0.0
+    assert report.gate_pass is False
     assert "missing_evidence" in report.missing_signals or report.missing_signals
-
-
-def test_evaluate_quality_with_numbers():
-    chunks = [
-        EvidenceChunk("c1", "Price: $10/month USD", "https://x.com", "pricing", 0.9, "Price: $10/month USD"),
-    ]
-    report = evaluate_quality(chunks, ["numbers_units"])
-    assert report.feature_scores["numbers_units"] >= 0.3
-    assert report.quality_score > 0
-
-
-def test_infer_required_evidence():
-    assert "numbers_units" in infer_required_evidence("what is the price?")
-    assert "transaction_link" in infer_required_evidence("link to order")
-    assert "policy_language" in infer_required_evidence("refund policy")
-    assert "steps_structure" in infer_required_evidence("how to setup")
-    # Comparison queries (diff, compare)
-    comp = infer_required_evidence("what diff from dedicated and vds?")
-    assert "numbers_units" in comp
-    assert "has_any_url" in comp
+    assert report.hard_requirement_coverage == {"numbers_units": False}
 
 
 def test_passes_quality_gate_no_required():
@@ -64,7 +47,7 @@ def test_passes_quality_gate_no_required():
 
 
 def test_passes_quality_gate_uses_gate_pass_when_set():
-    """When report.gate_pass is set (LLM v2), passes_quality_gate uses it directly."""
+    """When report.gate_pass is set, passes_quality_gate uses it directly."""
     report_pass = QualityReport(0.3, {}, ["missing_numbers"], None, 0.5, gate_pass=True)
     assert passes_quality_gate(report_pass, ["numbers_units"], hard_requirements=["numbers_units"])
 
@@ -72,46 +55,14 @@ def test_passes_quality_gate_uses_gate_pass_when_set():
     assert not passes_quality_gate(report_fail, None)
 
 
-def test_hard_requirement_uses_sufficiency_not_average_threshold():
-    """A single strong chunk can satisfy a hard requirement even when average ratio is low."""
-    chunks = [
-        EvidenceChunk(
-            "c1",
-            "Plan: $10/month USD",
-            "https://example.com/pricing",
-            "pricing",
-            0.9,
-            "Plan: $10/month USD",
-        ),
-    ]
-    chunks.extend(
-        EvidenceChunk(
-            f"noise-{idx}",
-            "General info without numbers",
-            "https://example.com/info",
-            "faq",
-            0.2,
-            "General info without numbers",
-        )
-        for idx in range(9)
+def test_passes_quality_gate_uses_hard_coverage_when_gate_pass_none():
+    """When gate_pass is None, falls back to hard_coverage check."""
+    report = QualityReport(
+        0.5, {}, [], None, 0.1,
+        gate_pass=None,
+        hard_requirement_coverage={"numbers_units": True},
     )
-
-    report = evaluate_quality(
-        chunks,
-        ["numbers_units"],
-        hard_requirements=["numbers_units"],
-    )
-
-    assert report.feature_scores["numbers_units"] < 0.3
-    assert report.sufficiency_scores is not None
-    assert report.sufficiency_scores["numbers_units"] == 1.0
-    assert report.hard_requirement_coverage is not None
-    assert report.hard_requirement_coverage["numbers_units"] is True
-    assert passes_quality_gate(
-        report,
-        ["numbers_units"],
-        hard_requirements=["numbers_units"],
-    )
+    assert passes_quality_gate(report, ["numbers_units"], hard_requirements=["numbers_units"])
 
 
 def test_plan_retry_attempt_1():
@@ -119,13 +70,47 @@ def test_plan_retry_attempt_1():
 
 
 def test_plan_retry_attempt_2():
-    strat = plan_retry(["missing_numbers"], 2)
+    """With evidence_eval retry_needed, returns strategy from LLM output."""
+    from app.services.evidence_evaluator import EvidenceEvalResult
+
+    evidence_eval = EvidenceEvalResult(
+        relevance_score=0.3,
+        coverage_gaps=["missing pricing"],
+        retry_needed=True,
+        suggested_query="VPS monthly pricing USD",
+        retry_boost_terms=["USD", "pricing"],
+        retry_doc_types=["pricing"],
+    )
+    strat = plan_retry(["missing_numbers"], 2, evidence_eval_result=evidence_eval)
     assert strat is not None
     assert isinstance(strat, RetryStrategy)
-    assert "USD" in strat.boost_patterns or "$" in strat.boost_patterns
+    assert strat.suggested_query == "VPS monthly pricing USD"
+    assert "USD" in strat.boost_patterns
+    assert "pricing" in (strat.filter_doc_types or [])
 
 
-def test_plan_retry_boilerplate():
-    strat = plan_retry(["boilerplate_risk"], 2)
-    assert strat.context_expansion is True
-    assert "menu" in strat.exclude_patterns or "copyright" in strat.exclude_patterns
+def test_plan_retry_fallback_rewrite_candidates():
+    """With query_spec rewrite_candidates, returns strategy when no evidence_eval."""
+    from app.services.schemas import QuerySpec
+
+    spec = QuerySpec(
+        intent="policy",
+        entities=[],
+        constraints={},
+        required_evidence=[],
+        risk_level="low",
+        keyword_queries=[],
+        semantic_queries=[],
+        clarifying_questions=[],
+        is_ambiguous=False,
+        rewrite_candidates=["refund policy", "refund terms for proxies"],
+    )
+    strat = plan_retry(["missing_policy"], 2, query_spec=spec)
+    assert strat is not None
+    assert strat.suggested_query == "refund terms for proxies"
+
+
+def test_plan_retry_no_strategy_when_no_input():
+    """Returns None when no evidence_eval and no rewrite_candidates."""
+    strat = plan_retry(["missing_numbers"], 2)
+    assert strat is None

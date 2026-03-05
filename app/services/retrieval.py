@@ -38,6 +38,7 @@ class QueryRewrite:
 
     keyword_query: str
     semantic_query: str
+    retrieval_profile: str | None = None  # From LLM rewriter when QuerySpec absent
 
 
 class RetrievalService:
@@ -168,9 +169,14 @@ class RetrievalService:
             )
 
         if profile == "policy_profile" or "policy_language" in hard_requirements:
-            ensure_doc_types.extend(["policy", "tos"])
-            # Product pages (proxies, vps, dedicated) have product-specific policy disclaimers
-            ensure_doc_types.append("pricing")
+            policy_types = [
+                t.strip()
+                for t in (self._settings.retrieval_policy_doc_types or "").split(",")
+                if t.strip()
+            ]
+            if policy_types:
+                ensure_doc_types.extend(policy_types)
+                ensure_doc_types.append("pricing")  # product-specific policy disclaimers
 
         if profile == "troubleshooting_profile" or "steps_structure" in hard_requirements:
             ensure_doc_types.extend(["howto", "docs", "faq"])
@@ -180,14 +186,14 @@ class RetrievalService:
 
         return list(dict.fromkeys(ensure_doc_types))
 
-    def _query_rewrite(
+    async def _query_rewrite(
         self,
         query: str,
         conversation_history: list[dict[str, str]] | None = None,
         retry_strategy: RetryStrategy | None = None,
         query_spec: QuerySpec | None = None,
     ) -> QueryRewrite:
-        """Rewrite query: use QuerySpec when available, else conversation context + expand plans/pricing."""
+        """Rewrite query: use QuerySpec when available, else LLM rewriter or heuristic."""
         if query_spec:
             keyword_query = query_spec.keyword_queries[0] if query_spec.keyword_queries else ""
             semantic_query = query_spec.semantic_queries[0] if query_spec.semantic_queries else ""
@@ -226,11 +232,26 @@ class RetrievalService:
                     keyword_query=keyword_query,
                     semantic_query=semantic_query,
                 )
-        # Fallback: conversation-aware
+        # Fallback: LLM rewriter or rule-based heuristic
+        if self._settings.query_rewriter_use_llm:
+            from app.services.query_rewriter import rewrite_for_retrieval
+            retry_boost = ""
+            if retry_strategy and retry_strategy.boost_patterns:
+                retry_boost = " ".join(
+                    p for p in retry_strategy.boost_patterns if not p.startswith("\\")
+                )[:100]
+            result = await rewrite_for_retrieval(
+                query, conversation_history, retry_boost or None
+            )
+            return QueryRewrite(
+                keyword_query=result.keyword_query,
+                semantic_query=result.semantic_query,
+                retrieval_profile=result.retrieval_profile,
+            )
+        # Rule-based heuristic (when query_rewriter_use_llm=False)
         semantic_query = self._rewrite_with_conversation(query, conversation_history)
         q = semantic_query.lower()
         keyword_query = semantic_query
-        # Expand "VPS plans" type queries for better BM25 hits on pricing docs
         if any(kw in q for kw in ["plan", "plans", "price", "pricing", "vps", "offer", "cost", "link"]):
             extras = []
             if "plan" in q or "plans" in q or "link" in q:
@@ -243,7 +264,6 @@ class RetrievalService:
                 extras.extend(["contact", "email", "FAQ"])
             if extras:
                 keyword_query = f"{semantic_query} {' '.join(extras[:4])}"
-        # Retry attempt 2: append boost patterns from Retry Planner
         if retry_strategy and retry_strategy.boost_patterns:
             boost = " ".join(p for p in retry_strategy.boost_patterns if not p.startswith("\\"))
             if boost:
@@ -371,7 +391,7 @@ class RetrievalService:
         plan = retrieval_plan or build_retrieval_plan(
             effective_query, attempt, effective_query_spec, retry_strategy
         )
-        qr = self._query_rewrite(
+        qr = await self._query_rewrite(
             effective_query, conversation_history, retry_strategy, effective_query_spec
         )
         try:
@@ -385,19 +405,27 @@ class RetrievalService:
             )
         except Exception:
             pass
-        if plan.query_keyword:
+        # Only override with plan when QuerySpec exists (plan has query_spec values).
+        # When no QuerySpec, plan has raw query; keep our LLM/heuristic rewrite.
+        if plan.query_keyword and effective_query_spec:
             qr = QueryRewrite(
                 keyword_query=plan.query_keyword,
                 semantic_query=plan.query_semantic or qr.semantic_query,
+                retrieval_profile=qr.retrieval_profile,
             )
 
+        # Use retrieval_profile from LLM rewriter when no QuerySpec (overrides plan heuristic)
+        profile = (
+            qr.retrieval_profile
+            if (qr.retrieval_profile and not effective_query_spec)
+            else plan.profile
+        )
         effective_doc_types = doc_types or plan.preferred_doc_types
         if retry_strategy and retry_strategy.filter_doc_types:
             effective_doc_types = retry_strategy.filter_doc_types
 
         fetch_n = plan.fetch_n or top_n or self._settings.retrieval_top_n
         rerank_k = plan.rerank_k or top_k or self._settings.retrieval_top_k
-        profile = plan.profile
         hard_requirements = self._resolve_hard_requirements(effective_query_spec)
         is_pricing_retrieval = self._is_pricing_retrieval(
             effective_query, profile, effective_query_spec, hard_requirements
@@ -529,8 +557,40 @@ class RetrievalService:
             if before > len(reranked_search):
                 stats["exclude_patterns_filtered"] = before - len(reranked_search)
 
+        # Evidence Selector: coverage-aware selection (Phase 1)
+        required_evidence = []
+        if effective_query_spec:
+            required_evidence = list(
+                getattr(effective_query_spec, "hard_requirements", None)
+                or effective_query_spec.required_evidence
+                or []
+            )
+        coverage_map: dict[str, str] | None = None
+        if self._settings.evidence_selector_use_llm and reranked_search:
+            from app.services.evidence_selector import select_evidence_for_query
+            product_type = None
+            if effective_query_spec and getattr(effective_query_spec, "resolved_slots", None):
+                product_type = str((effective_query_spec.resolved_slots or {}).get("product_type", "")).strip() or None
+            selection = await select_evidence_for_query(
+                effective_query,
+                reranked_search,
+                required_evidence=required_evidence if required_evidence else None,
+                product_type=product_type,
+                top_k_fallback=self._settings.evidence_selector_fallback_top_k,
+            )
+            reranked_search = selection.selected
+            if selection.used_llm:
+                coverage_map = selection.coverage_map
+                stats["evidence_selector"] = {
+                    "used_llm": True,
+                    "coverage_map": selection.coverage_map,
+                    "uncovered_requirements": selection.uncovered_requirements[:5],
+                    "reasoning": selection.reasoning[:100],
+                }
+
         evidence_set = build_evidence_set(
-            reranked_search, effective_query_spec, plan, candidate_pool
+            reranked_search, effective_query_spec, plan, candidate_pool,
+            coverage_map=coverage_map,
         )
         evidence = list(evidence_set.chunks)
 
@@ -576,7 +636,8 @@ class RetrievalService:
                     if e.chunk_id in chunk_by_id
                 ]
                 evidence_set = build_evidence_set(
-                    reranked_rebuild, effective_query_spec, plan, candidate_pool
+                    reranked_rebuild, effective_query_spec, plan, candidate_pool,
+                    coverage_map=None,  # rebuild: use heuristic (chunks changed)
                 )
                 evidence = list(evidence_set.chunks)
 

@@ -222,6 +222,22 @@ class SystemPromptResponse(BaseModel):
     value: str
 
 
+class AutoGenerateBrandingRequest(BaseModel):
+    """Request to auto-generate branding from website URL."""
+
+    url: str = Field(..., min_length=1, description="Website URL (e.g. https://example.com)")
+
+
+class AutoGenerateBrandingResponse(BaseModel):
+    """Response with generated branding config (saved to DB)."""
+
+    status: str = "ok"
+    persona: str = Field(description="Generated persona (system_prompt intro)")
+    prompt_domain: str = Field(description="support | legal | generic")
+    custom_prompt_rules: str = Field(description="Admin-defined rules (may be empty)")
+    app_name: str = Field(default="", description="Suggested company name for APP_NAME env")
+
+
 class SystemPromptUpdateRequest(BaseModel):
     """Update system prompt."""
 

@@ -42,20 +42,24 @@ def test_merge_with_rrf():
     assert merged[0].score > merged[1].score
 
 
-def test_query_rewrite():
-    """Query rewrite returns same query for both (simple implementation)."""
+@pytest.mark.asyncio
+async def test_query_rewrite(monkeypatch):
+    """Query rewrite returns keyword and semantic (heuristic when LLM disabled)."""
     svc = RetrievalService()
-    qr = svc._query_rewrite("refund policy")
+    monkeypatch.setattr(svc, "_settings", type("S", (), {"query_rewriter_use_llm": False})())
+    qr = await svc._query_rewrite("refund policy")
     assert qr.keyword_query
     assert qr.semantic_query
     assert "refund" in qr.keyword_query
     assert "refund" in qr.semantic_query
 
 
-def test_query_rewrite_excludes_stopwords_from_context():
+@pytest.mark.asyncio
+async def test_query_rewrite_excludes_stopwords_from_context(monkeypatch):
     """Context from 'hello what diff' should not add 'hello' to query."""
     svc = RetrievalService()
-    qr = svc._query_rewrite(
+    monkeypatch.setattr(svc, "_settings", type("S", (), {"query_rewriter_use_llm": False})())
+    qr = await svc._query_rewrite(
         "what diff from dedicated and vds?",
         conversation_history=[
             {"role": "user", "content": "hello"},
@@ -67,7 +71,8 @@ def test_query_rewrite_excludes_stopwords_from_context():
     assert "hello" not in qr.semantic_query.lower()
 
 
-def test_query_rewrite_with_query_spec():
+@pytest.mark.asyncio
+async def test_query_rewrite_with_query_spec():
     """When QuerySpec provided, use its keyword/semantic queries."""
     from app.services.schemas import QuerySpec
 
@@ -83,12 +88,13 @@ def test_query_rewrite_with_query_spec():
         clarifying_questions=[],
         is_ambiguous=False,
     )
-    qr = svc._query_rewrite("original query", query_spec=spec)
+    qr = await svc._query_rewrite("original query", query_spec=spec)
     assert qr.keyword_query == "custom keyword query"
     assert qr.semantic_query == "custom semantic query"
 
 
-def test_query_rewrite_uses_rewrite_candidates_on_retry():
+@pytest.mark.asyncio
+async def test_query_rewrite_uses_rewrite_candidates_on_retry():
     """On retry without suggested_query, QuerySpec rewrite_candidates can refine the search query."""
     from app.services.schemas import QuerySpec
     from app.services.retry_planner import RetryStrategy
@@ -106,7 +112,7 @@ def test_query_rewrite_uses_rewrite_candidates_on_retry():
         is_ambiguous=False,
         rewrite_candidates=["pricing query", "dedicated server monthly pricing"],
     )
-    qr = svc._query_rewrite(
+    qr = await svc._query_rewrite(
         "original query",
         retry_strategy=RetryStrategy(boost_patterns=["USD"]),
         query_spec=spec,

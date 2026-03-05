@@ -34,10 +34,6 @@ Output JSON only, no markdown:
 
 Rules:
 - Return 1-3 most relevant types. Empty array [] means search all.
-- Price/order/buy questions → pricing
-- Refund/policy/terms/cancel → policy, tos
-- How-to/setup/fix/step → howto, faq
-- General product questions → faq, howto, other
 """
 
     try:

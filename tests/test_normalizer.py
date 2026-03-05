@@ -78,7 +78,7 @@ async def test_normalize_policy(mock_get_gateway):
     spec = await normalize("refund policy")
     assert spec.intent == "policy"
     assert "policy_language" in (spec.required_evidence or [])
-    assert "policy_language" in (spec.hard_requirements or [])
+    assert "policy_language" in (spec.soft_requirements or [])
     assert spec.risk_level in ("low", "medium", "high")
 
 

@@ -51,9 +51,18 @@ def segment_claims(answer: str) -> list[Claim]:
 
 def is_risky_claim(claim_text: str) -> bool:
     """True if claim contains patterns that typically need citation (numbers, policy)."""
+    return is_number_claim(claim_text) or is_policy_claim(claim_text)
+
+
+def is_number_claim(claim_text: str) -> bool:
+    """True if claim has price/number patterns."""
     t = claim_text.lower()
-    if re.search(r"\$[\d,]+\.?\d*|[\d]+%|\d{1,2}/\d{1,2}/\d{2,4}", t):
-        return True
+    return bool(re.search(r"\$[\d,]+\.?\d*|[\d]+%|\d{1,2}/\d{1,2}/\d{2,4}", t))
+
+
+def is_policy_claim(claim_text: str) -> bool:
+    """True if claim has policy/refund/terms patterns."""
+    t = claim_text.lower()
     policy_phrases = [
         r"according to (?:our |the )?policy",
         r"(?:we |the company )?(?:shall|must|may not)",

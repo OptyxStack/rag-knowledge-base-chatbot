@@ -15,6 +15,8 @@ from app.api.schemas import (
     AppConfigUpdateRequest,
     ArchiConfigResponse,
     ArchiConfigUpdateRequest,
+    AutoGenerateBrandingRequest,
+    AutoGenerateBrandingResponse,
     DocTypeCreateRequest,
     DocTypeResponse,
     DocTypeUpdateRequest,
@@ -555,6 +557,49 @@ async def refresh_config_cache(
     await refresh_llm_config(db)
     await refresh_archi_config(db)
     return {"status": "ok", "message": "Cache refreshed"}
+
+
+@router.post("/config/auto-generate-from-domain", response_model=AutoGenerateBrandingResponse)
+async def auto_generate_branding_from_domain(
+    body: AutoGenerateBrandingRequest,
+    db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(verify_admin_api_key),
+):
+    """Fetch website content, analyze with AI, and save persona, prompt_domain, custom_prompt_rules to DB."""
+    from app.db.models import generate_uuid
+
+    from app.services.branding_auto_generator import generate_branding_from_domain
+
+    try:
+        result = await generate_branding_from_domain(body.url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("auto_generate_branding_failed", url=body.url, error=str(e))
+        raise HTTPException(status_code=502, detail=f"Failed to generate: {e}") from e
+
+    keys_to_save = [
+        ("system_prompt", result["persona"]),
+        ("prompt_domain", result["prompt_domain"]),
+        ("custom_prompt_rules", result["custom_prompt_rules"]),
+    ]
+    for key, value in keys_to_save:
+        existing = await db.execute(select(AppConfig).where(AppConfig.key == key).limit(1))
+        row = existing.scalars().one_or_none()
+        if row:
+            row.value = value
+        else:
+            db.add(AppConfig(id=generate_uuid(), key=key, value=value))
+    await db.flush()
+    await refresh_cache(db)
+
+    return AutoGenerateBrandingResponse(
+        status="ok",
+        persona=result["persona"],
+        prompt_domain=result["prompt_domain"],
+        custom_prompt_rules=result["custom_prompt_rules"],
+        app_name=result.get("app_name", ""),
+    )
 
 
 @router.get("/config/system-prompt", response_model=SystemPromptResponse)

@@ -1,7 +1,8 @@
-"""GENERATE phase: LLM + self-critic."""
+"""GENERATE phase: filter chunks → LLM + self-critic."""
 
 from app.core.logging import get_logger
 from app.services.branding_config import get_system_prompt
+from app.services.chunk_filter import filter_chunks_for_query
 from app.services.answer_utils import (
     build_answer_plan,
     format_answer_plan_instruction,
@@ -24,14 +25,19 @@ async def execute_generate(
     orchestrator,
     settings,
 ) -> PhaseResult:
-    """Run LLM generation with self-critic."""
+    """Run chunk filter → LLM generation with self-critic."""
+    evidence = ctx.evidence
+    if evidence:
+        evidence = await filter_chunks_for_query(ctx.effective_query or ctx.query, evidence)
+        ctx.evidence = evidence
+
     answer_plan = build_answer_plan(
         ctx.decision_result,
         ctx.query_spec,
         ctx.quality_report,
     )
     max_chars = settings.llm_max_evidence_chars
-    evidence_block = format_evidence_for_prompt(ctx.evidence, max_chars)
+    evidence_block = format_evidence_for_prompt(evidence, max_chars)
     user_content = f"User question: {ctx.effective_query}\n\nEvidence:\n{evidence_block}"
     system_prompt = get_system_prompt()
     system_prompt = (

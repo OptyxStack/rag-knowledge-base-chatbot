@@ -111,12 +111,25 @@ class MockRetrievalService:
 
 
 class MockLLMGateway:
-    """Mock LLM gateway for generate phase."""
+    """Mock LLM gateway. Returns evidence-quality format for assess phase, generate format for generate phase."""
 
     def __init__(self, response: MagicMock | None = None):
         self._response = response or _make_llm_response()
 
-    async def chat(self, *args, **kwargs) -> MagicMock:
+    async def chat(self, messages=None, **kwargs) -> MagicMock:
+        if messages and any("evaluate whether retrieved evidence" in str(m.get("content", "")) for m in messages if isinstance(m, dict)):
+            resp = MagicMock()
+            resp.content = json.dumps({
+                "pass": True,
+                "confidence": 0.9,
+                "reason": "Evidence sufficient",
+                "missing_signals": [],
+                "coverage": {"numbers_units": True, "has_any_url": True},
+            })
+            resp.finish_reason = "stop"
+            resp.input_tokens = 50
+            resp.output_tokens = 30
+            return resp
         return self._response
 
 
@@ -140,14 +153,6 @@ def _disable_llm_phases(monkeypatch):
     """Disable LLM-based phases to avoid extra API calls in integration tests."""
     monkeypatch.setattr(
         "app.services.archi_config.get_evidence_evaluator_enabled",
-        lambda: False,
-    )
-    monkeypatch.setattr(
-        "app.services.archi_config.get_evidence_quality_use_llm",
-        lambda: False,
-    )
-    monkeypatch.setattr(
-        "app.services.archi_config.get_evidence_quality_llm_v2",
         lambda: False,
     )
     monkeypatch.setattr(

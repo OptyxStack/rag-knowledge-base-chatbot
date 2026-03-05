@@ -2,12 +2,17 @@
 
 Branding, system prompt, and intent cache are stored in app_config and intents tables.
 Cache is refreshed on startup and can be invalidated via refresh_cache().
+
+Prompt layering (Core + Domain + Custom):
+- Core: non-overridable rules (evidence-only, cite sources, JSON output)
+- Domain: preset (support | legal | generic) or custom from DB
+- Custom: optional admin-defined rules from app_config.custom_prompt_rules
 """
 
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,20 +23,40 @@ from app.db.models import AppConfig, Intent
 
 logger = get_logger(__name__)
 
-# Fallback when DB is empty or unavailable (generic, deployer customizes via Admin API)
-FALLBACK_SYSTEM_PROMPT = """You are a support assistant. You must ONLY use the provided evidence to answer. Never guess or make up information.
+# --- Core rules (always enforced, domain-agnostic) ---
+CORE_RULES = """You are a RAG assistant. Ground all factual claims (prices, links, policy, specs, steps) in the provided evidence. Do not invent or guess facts.
 
-RULES:
-1. Use ONLY the provided evidence chunks. Do not add information from your training.
-2. When listing items (products, features, options), include ONLY what is explicitly named in the evidence. Never infer or add similar items.
-3. When the user asks about plans, products, or pricing: ALWAYS include (1) plan names, (2) prices/specs, and (3) the actual links (source_url or order_link from evidence). Format like: "Plan X: $Y – [link]". Do not give a generic answer without links.
-4. If the evidence only partially answers the question, provide a bounded partial answer with decision set to PASS. Clearly separate confirmed details from unverified details. Use ASK_USER only when no safe bounded answer can be given.
-5. For high-risk topics (refunds, billing disputes, legal, abuse), if you cannot find clear policy evidence, set decision to ESCALATE.
-6. Always cite your sources. For each key claim, include a citation with chunk_id and source_url.
-7. If you cite a chunk, it MUST be in the evidence list.
-8. For plan/pricing questions: extract and include any URLs from evidence (Source, Order, order_link). Users want direct links to order or view plans.
-9. Respond with valid JSON matching the output schema. No markdown, no extra text—only the JSON object.
+CORE RULES (always enforced):
+1. For facts, prices, links, policy, specs: use ONLY the evidence. Do not add or infer facts from your training.
+2. When listing items, include ONLY what is explicitly named in the evidence. Never infer or add similar items.
+3. Always cite your sources. For each key claim, include a citation with chunk_id and source_url.
+4. If you cite a chunk, it MUST be in the evidence list.
+5. Respond with valid JSON matching the output schema. No markdown, no extra text—only the JSON object."""
 
+# --- Domain presets (config: support | legal | generic) ---
+DOMAIN_SUPPORT = """
+DOMAIN RULES (support / plans / pricing):
+- When the user asks about plans, products, or pricing: ALWAYS include (1) plan names, (2) prices/specs, and (3) the actual links (source_url or order_link from evidence). Format like: "Plan X: $Y – [link]". Do not give a generic answer without links.
+- If the evidence only partially answers the question, provide a bounded partial answer with decision set to PASS. Clearly separate confirmed details from unverified details. Use ASK_USER only when no safe bounded answer can be given.
+- Use the evidence. When evidence contains information relevant to the query—policy, terms, eligibility, exclusions, steps, specs, links—extract, quote, or paraphrase it. Do not say "I cannot provide", "please refer to", or "contact support" when the answer is already in the evidence. Answer from the evidence.
+- ESCALATE only when evidence is empty or clearly irrelevant. ASK_USER only when the query is ambiguous or evidence is insufficient and no safe partial answer exists. When evidence has usable content, answer from it."""
+
+DOMAIN_LEGAL = """
+DOMAIN RULES (legal / policy):
+- For policy, terms, or legal questions: quote or paraphrase only from evidence. Do not interpret legal language.
+- For high-risk topics (refunds, disputes, liability), if you cannot find clear policy evidence, set decision to ESCALATE.
+- Always cite the specific document/source for legal claims."""
+
+DOMAIN_GENERIC = """
+DOMAIN RULES: (minimal—no extra domain-specific rules)"""
+
+DOMAIN_PRESETS: dict[str, str] = {
+    "support": DOMAIN_SUPPORT,
+    "legal": DOMAIN_LEGAL,
+    "generic": DOMAIN_GENERIC,
+}
+
+OUTPUT_SCHEMA = """
 OUTPUT SCHEMA (JSON):
 {
   "decision": "PASS" | "ASK_USER" | "ESCALATE",
@@ -42,6 +67,9 @@ OUTPUT SCHEMA (JSON):
 }
 
 Evidence chunks will be provided in the user message."""
+
+# Legacy fallback (full prompt) for backward compat when DB has no layered config
+FALLBACK_SYSTEM_PROMPT = "You are a support assistant.\n\n" + CORE_RULES + DOMAIN_SUPPORT + OUTPUT_SCHEMA
 
 LANE_AWARE_PROMPT_SUFFIX = """
 
@@ -76,26 +104,61 @@ class IntentMatch:
 
 # In-memory cache
 _cache: dict[str, Any] = {
-    "system_prompt": None,
+    "persona": None,
+    "prompt_domain": None,
+    "custom_prompt_rules": None,
+    "use_legacy_full_prompt": False,
     "intents": None,
     "updated_at": 0.0,
 }
 CACHE_TTL_SECONDS = 60  # Refresh every 60s if stale
 
+PROMPT_CONFIG_KEYS = ("system_prompt", "prompt_domain", "custom_prompt_rules")
 
-async def _load_from_db(session: AsyncSession) -> tuple[str, list[tuple[str, str, str]]]:
-    """Load system prompt and intents from DB."""
-    prompt = FALLBACK_SYSTEM_PROMPT
+
+def _build_layered_prompt(
+    persona: str | None,
+    domain: Literal["support", "legal", "generic"],
+    custom_rules: str | None,
+) -> str:
+    """Build system prompt from Core + Domain + Custom layers."""
+    parts: list[str] = []
+    if persona and persona.strip():
+        parts.append(persona.strip())
+    parts.append(CORE_RULES)
+    domain_rules = DOMAIN_PRESETS.get(domain, DOMAIN_GENERIC)
+    parts.append(domain_rules)
+    if custom_rules and custom_rules.strip():
+        parts.append("\nCUSTOM RULES (admin-defined):\n" + custom_rules.strip())
+    parts.append(OUTPUT_SCHEMA)
+    prompt = "\n\n".join(parts)
+    if "PASS_WEAK is a bounded-answer lane" not in prompt:
+        prompt = f"{prompt.rstrip()}\n{LANE_AWARE_PROMPT_SUFFIX}".strip()
+    return prompt
+
+
+async def _load_from_db(session: AsyncSession) -> tuple[dict[str, Any], list[tuple[str, str, str]]]:
+    """Load prompt config and intents from DB."""
+    persona: str | None = None
+    prompt_domain: str | None = None
+    custom_prompt_rules: str | None = None
     intents: list[tuple[str, str, str]] = []
 
     try:
-        # System prompt
         result = await session.execute(
-            select(AppConfig.value).where(AppConfig.key == "system_prompt").limit(1)
+            select(AppConfig.key, AppConfig.value).where(
+                AppConfig.key.in_(PROMPT_CONFIG_KEYS)
+            )
         )
-        row = result.scalar_one_or_none()
-        if row:
-            prompt = row
+        for key, value in result.all():
+            if key == "system_prompt" and value:
+                persona = value
+            elif key == "prompt_domain" and value:
+                v = value.strip().lower()
+                if v in ("support", "legal", "generic"):
+                    prompt_domain = v
+            elif key == "custom_prompt_rules" and value:
+                custom_prompt_rules = value
 
         # Intents (enabled only, ordered by sort_order)
         result = await session.execute(
@@ -110,23 +173,60 @@ async def _load_from_db(session: AsyncSession) -> tuple[str, list[tuple[str, str
         logger.warning("branding_config_load_failed", error=str(e))
         intents = _get_fallback_intents()
 
-    return prompt, intents
+    settings = get_settings()
+    domain = (prompt_domain or getattr(settings, "prompt_domain", "support")) or "support"
+    if domain not in ("support", "legal", "generic"):
+        domain = "support"
+
+    # Backward compat: if system_prompt looks like legacy full prompt, keep as full override
+    is_legacy_full = (
+        persona is not None
+        and len(persona) > 400
+        and ("OUTPUT SCHEMA" in persona or "RULES:" in persona)
+    )
+
+    return {
+        "persona": persona or "You are a support assistant.",
+        "prompt_domain": domain,
+        "custom_prompt_rules": custom_prompt_rules,
+        "use_legacy_full_prompt": is_legacy_full,
+    }, intents
 
 
 async def refresh_cache(session: AsyncSession) -> None:
     """Load config from DB and update in-memory cache."""
-    prompt, intents = await _load_from_db(session)
-    _cache["system_prompt"] = prompt
+    prompt_cfg, intents = await _load_from_db(session)
+    _cache["persona"] = prompt_cfg["persona"]
+    _cache["prompt_domain"] = prompt_cfg["prompt_domain"]
+    _cache["custom_prompt_rules"] = prompt_cfg["custom_prompt_rules"]
+    _cache["use_legacy_full_prompt"] = prompt_cfg.get("use_legacy_full_prompt", False)
     _cache["intents"] = intents
     _cache["updated_at"] = time.monotonic()
-    logger.info("branding_config_cache_refreshed", intents_count=len(intents))
+    logger.info(
+        "branding_config_cache_refreshed",
+        intents_count=len(intents),
+        prompt_domain=prompt_cfg["prompt_domain"],
+    )
 
 
 def get_system_prompt() -> str:
-    """Return cached system prompt. Falls back to FALLBACK if cache empty."""
-    prompt = _cache.get("system_prompt")
-    if prompt is None:
+    """Return cached system prompt (Core + Domain + Custom). Falls back to FALLBACK if cache empty."""
+    persona = _cache.get("persona")
+    domain = _cache.get("prompt_domain")
+    custom_rules = _cache.get("custom_prompt_rules")
+    use_legacy = _cache.get("use_legacy_full_prompt", False)
+
+    if use_legacy and persona:
+        prompt = persona
+    elif persona is None and domain is None:
         prompt = FALLBACK_SYSTEM_PROMPT
+    else:
+        domain = domain or getattr(get_settings(), "prompt_domain", "support")
+        if domain not in ("support", "legal", "generic"):
+            domain = "support"
+        persona = persona or "You are a support assistant."
+        prompt = _build_layered_prompt(persona, domain, custom_rules)
+
     if "PASS_WEAK is a bounded-answer lane" not in prompt:
         prompt = f"{prompt.rstrip()}\n{LANE_AWARE_PROMPT_SUFFIX}".strip()
     return prompt
@@ -165,7 +265,7 @@ def match_intent(query: str) -> IntentMatch | None:
 
 def is_cache_stale() -> bool:
     """True if cache is empty or TTL exceeded."""
-    if _cache.get("system_prompt") is None:
+    if _cache.get("persona") is None and _cache.get("prompt_domain") is None:
         return True
     elapsed = time.monotonic() - _cache.get("updated_at", 0)
     return elapsed > CACHE_TTL_SECONDS

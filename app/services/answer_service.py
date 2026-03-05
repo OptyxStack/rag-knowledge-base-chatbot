@@ -9,7 +9,6 @@ from app.services.flow_debug import _pipeline_log
 from app.core.logging import get_logger
 from app.services.branding_config import match_intent
 from app.services.decision_router import route as decision_route
-from app.services.evidence_quality import infer_required_evidence
 from app.services.flow_debug import build_flow_debug
 from app.services.llm_config import get_llm_fallback_model, get_llm_model
 from app.services.llm_gateway import LLMGateway, get_llm_gateway
@@ -107,33 +106,20 @@ class AnswerService:
         if query_spec and query_spec.canonical_query_en:
             effective_query = query_spec.canonical_query_en
 
-        if query_spec and query_spec.skip_retrieval and query_spec.canned_response:
-            _pipeline_log("answer_service", "skip_retrieval", intent=getattr(query_spec, "intent", ""), trace_id=trace_id)
-            from app.core.metrics import compute_message_cost
-            from app.core.tracing import llm_call_log_var
-            usage_list = llm_usage_var.get() or []
-            cost_usd, agg_tokens, breakdown = compute_message_cost(usage_list)
-            debug = {
-                "trace_id": trace_id,
-                "skip_retrieval": True,
-                "intent": query_spec.intent,
-                "source_lang": source_lang,
-            }
-            if cost_usd > 0:
-                debug["cost_usd"] = round(cost_usd, 6)
-                debug["llm_tokens"] = agg_tokens
-                if breakdown:
-                    debug["llm_usage_breakdown"] = breakdown
-            llm_call_log = llm_call_log_var.get() or []
-            if llm_call_log:
-                debug["llm_call_log"] = llm_call_log
+        if query_spec and query_spec.skip_retrieval:
+            # Routine question: respond immediately with canned_response, no retrieval or LLM
+            _pipeline_log("answer_service", "skip_retrieval_canned", trace_id=trace_id)
+            canned = (query_spec.canned_response or "").strip()
+            if not canned:
+                app_name = (self._settings.app_name or "").strip()
+                canned = f"Hello! Welcome to {app_name} support. How can I help you today?" if app_name else "Hello! How can I help you today?"
             return AnswerOutput(
                 decision="PASS",
-                answer=query_spec.canned_response,
+                answer=canned,
                 followup_questions=[],
                 citations=[],
                 confidence=1.0,
-                debug=debug,
+                debug={"trace_id": trace_id, "skip_retrieval": True},
             )
 
         if (
@@ -172,7 +158,7 @@ class AnswerService:
             )
 
         required_evidence = (
-            query_spec.required_evidence if query_spec else infer_required_evidence(query)
+            query_spec.required_evidence if query_spec else []
         )
         hard_requirements = (
             (query_spec.hard_requirements or [])

@@ -2,7 +2,7 @@
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -20,13 +20,17 @@ Output JSON only, no markdown:
   "relevance_score": 0.0-1.0,
   "coverage_gaps": ["missing X", "missing Y"],
   "retry_needed": false,
-  "suggested_query": "alternative query if retry_needed"
+  "suggested_query": "alternative query if retry_needed",
+  "retry_boost_terms": [],
+  "retry_doc_types": []
 }
 
 relevance_score: 0-1, how relevant is the evidence to the query?
 coverage_gaps: what specific info is missing (e.g. "missing pricing", "missing SLA details")?
 retry_needed: true if evidence is insufficient or irrelevant and a different search might help
-suggested_query: when retry_needed, suggest a clearer query for retrieval (e.g. add keywords)"""
+suggested_query: when retry_needed, suggest a clearer query for retrieval (e.g. add keywords)
+retry_boost_terms: when retry_needed, optional terms to boost search (e.g. ["pricing", "USD"]). Empty [] if not needed.
+retry_doc_types: when retry_needed, optional doc types to search (e.g. ["pricing", "faq"]). Empty [] to keep default."""
 
 
 @dataclass
@@ -37,6 +41,8 @@ class EvidenceEvalResult:
     coverage_gaps: list[str]
     retry_needed: bool
     suggested_query: str | None
+    retry_boost_terms: list[str] = field(default_factory=list)
+    retry_doc_types: list[str] = field(default_factory=list)
 
 
 async def evaluate_evidence(
@@ -50,7 +56,7 @@ async def evaluate_evidence(
         return None
 
     if not evidence:
-        return EvidenceEvalResult(0.0, ["no_evidence"], True, query)
+        return EvidenceEvalResult(0.0, ["no_evidence"], True, query, [], [])
 
     summaries = []
     for i, e in enumerate(evidence[:top_n], 1):
@@ -86,12 +92,16 @@ async def evaluate_evidence(
         gaps = [str(g) for g in data.get("coverage_gaps", []) if isinstance(g, str)]
         retry = bool(data.get("retry_needed", False))
         suggested = (data.get("suggested_query") or "").strip() or None
+        boost = [str(t) for t in data.get("retry_boost_terms", []) if isinstance(t, str)][:8]
+        doc_types = [str(t) for t in data.get("retry_doc_types", []) if isinstance(t, str)][:5]
 
         result = EvidenceEvalResult(
             relevance_score=max(0.0, min(1.0, score)),
             coverage_gaps=gaps[:5],
             retry_needed=retry,
             suggested_query=suggested,
+            retry_boost_terms=boost,
+            retry_doc_types=doc_types,
         )
         try:
             from app.core.metrics import (

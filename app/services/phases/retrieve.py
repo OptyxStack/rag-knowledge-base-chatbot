@@ -31,6 +31,7 @@ async def execute_retrieve(
             ctx.quality_report.missing_signals if ctx.quality_report else [],
             2,
             evidence_eval_result=evidence_eval,
+            query_spec=ctx.query_spec,
         )
 
     retrieval_query, _, rewrite_candidates = resolve_retrieval_query(
