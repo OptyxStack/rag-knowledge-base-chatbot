@@ -30,6 +30,60 @@ def _reset_normalizer_settings(monkeypatch):
 
 @patch("app.services.normalizer.get_llm_gateway")
 @pytest.mark.asyncio
+async def test_normalize_uses_authoritative_retrieval_fields(mock_get_gateway):
+    mock_gateway = MagicMock()
+    mock_gateway.chat = AsyncMock(
+        return_value=_mock_llm_response({
+            "canonical_query_en": "refund policy for VPS",
+            "intent": "policy",
+            "entities": ["vps"],
+            "required_evidence": ["policy_language", "has_any_url"],
+            "hard_requirements": ["policy_language"],
+            "soft_requirements": ["has_any_url"],
+            "retrieval_profile": "policy_profile",
+            "doc_type_prior": ["policy", "tos"],
+            "risk_level": "high",
+            "is_ambiguous": False,
+            "clarifying_questions": [],
+            "retrieval_rewrites": ["vps refund policy"],
+            "skip_retrieval": False,
+        })
+    )
+    mock_get_gateway.return_value = mock_gateway
+
+    spec = await normalize("refund policy for VPS")
+    assert spec.retrieval_profile == "policy_profile"
+    assert spec.hard_requirements == ["policy_language"]
+    assert spec.soft_requirements == ["has_any_url"]
+    assert spec.doc_type_prior == ["policy", "tos"]
+
+
+@patch("app.services.normalizer.get_llm_gateway")
+@pytest.mark.asyncio
+async def test_normalize_infers_retrieval_profile_and_hard_requirements(mock_get_gateway):
+    mock_gateway = MagicMock()
+    mock_gateway.chat = AsyncMock(
+        return_value=_mock_llm_response({
+            "canonical_query_en": "vps pricing and order link",
+            "intent": "transactional",
+            "entities": ["vps"],
+            "required_evidence": ["numbers_units", "transaction_link"],
+            "risk_level": "medium",
+            "is_ambiguous": False,
+            "clarifying_questions": [],
+            "retrieval_rewrites": ["vps pricing order"],
+            "skip_retrieval": False,
+        })
+    )
+    mock_get_gateway.return_value = mock_gateway
+
+    spec = await normalize("vps pricing and order link")
+    assert spec.retrieval_profile == "pricing_profile"
+    assert set(spec.hard_requirements or []) == {"numbers_units", "transaction_link"}
+
+
+@patch("app.services.normalizer.get_llm_gateway")
+@pytest.mark.asyncio
 async def test_normalize_transactional(mock_get_gateway):
     mock_gateway = MagicMock()
     mock_gateway.chat = AsyncMock(

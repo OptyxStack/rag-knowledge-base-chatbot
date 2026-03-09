@@ -7,8 +7,11 @@ from app.services.orchestrator import OrchestratorContext, PhaseResult
 async def execute_verify(ctx: OrchestratorContext, *, reviewer) -> PhaseResult:
     """Run reviewer gate on generated answer."""
     dr = ctx.decision_result
+    reviewer_decision = (ctx.generated_decision or ctx.extra.get("generated_decision") or "PASS").upper()
+    if reviewer_decision not in {"PASS", "ASK_USER", "ESCALATE"}:
+        reviewer_decision = "PASS"
     reviewer_result = reviewer.review(
-        decision="PASS",
+        decision=reviewer_decision,
         answer=ctx.answer,
         citations=ctx.citations,
         evidence=ctx.evidence,
@@ -22,6 +25,7 @@ async def execute_verify(ctx: OrchestratorContext, *, reviewer) -> PhaseResult:
     status = getattr(reviewer_result, "status", None)
     _pipeline_log(
         "verify", "done",
+        reviewer_input_decision=reviewer_decision,
         reviewer_status=str(status) if status else None,
         trace_id=ctx.trace_id,
     )

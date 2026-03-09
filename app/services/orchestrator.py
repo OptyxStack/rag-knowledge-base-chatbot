@@ -79,6 +79,7 @@ class PhaseResult:
     citations: list[Any] = field(default_factory=list)
     followup: list[str] = field(default_factory=list)
     confidence: float = 0.0
+    generated_decision: str | None = None
     reviewer_result: Any = None
     retry_query_override: str | None = None
 
@@ -117,6 +118,7 @@ class OrchestratorContext:
     citations: list[Any] = field(default_factory=list)
     followup: list[str] = field(default_factory=list)
     confidence: float = 0.0
+    generated_decision: str | None = None
     retry_query_override: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -230,8 +232,6 @@ class Orchestrator:
                 return OrchestratorAction.ESCALATE
             if reviewer_status == "ASK_USER":
                 return OrchestratorAction.ASK_USER
-            if reviewer_status == "RETRIEVE_MORE" and ctx.retrieval_attempt < ctx.max_attempts:
-                return OrchestratorAction.RETRY_RETRIEVE
             return OrchestratorAction.ASK_USER
 
         if ctx.state == OrchestratorState.RETRYING:
@@ -290,8 +290,12 @@ class Orchestrator:
             ctx.followup = result.followup
             ctx.confidence = result.confidence
             ctx.answer_plan = result.answer_plan
+            ctx.generated_decision = result.generated_decision
             ctx.state = OrchestratorState.GENERATING
-            ctx.add_stage_reason("generate", "llm_complete")
+            ctx.add_stage_reason(
+                "generate",
+                f"llm_complete decision={result.generated_decision or 'unknown'}",
+            )
 
         elif action == OrchestratorAction.VERIFY:
             rr = result.reviewer_result
@@ -299,7 +303,6 @@ class Orchestrator:
             status_map = {
                 "PASS": "accept",
                 "ASK_USER": "downgrade_lane",
-                "RETRIEVE_MORE": "retry_targeted",
                 "ESCALATE": "escalate",
                 "TRIM_UNSUPPORTED": "trim_unsupported_claims",
                 "DOWNGRADE_LANE": "downgrade_lane",
@@ -320,8 +323,6 @@ class Orchestrator:
             )
             ctx.state = OrchestratorState.REVIEWING
             ctx.add_stage_reason("verify", _reviewer_status_to_str(rr) or "unknown")
-            if rr and hasattr(rr, "suggested_queries") and rr.suggested_queries:
-                ctx.retry_query_override = rr.suggested_queries[0]
 
         elif action == OrchestratorAction.RETRY_RETRIEVE:
             ctx.retrieval_attempt += 1

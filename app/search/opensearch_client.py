@@ -346,6 +346,7 @@ class OpenSearchClient:
         doc_types: list[str] | None = None,
         boost_pricing: bool = False,
         use_highlight: bool = True,
+        prefer_snippet: bool = True,
         snippet_max_chars: int = 900,
         recency_scale: str = "45d",
         min_should_match: str = "70%",
@@ -355,7 +356,8 @@ class OpenSearchClient:
         BM25 search with a more robust query structure.
 
         Returns SearchChunk list with:
-          - chunk_text: snippet if highlight available else stored chunk_text
+          - chunk_text: full chunk text by default when prefer_snippet=False,
+            otherwise snippet if highlight available
           - score: OpenSearch _score
         """
         client = await self._get_client()
@@ -418,6 +420,8 @@ class OpenSearchClient:
         # Business-aware boosts
         if boost_pricing:
             base_bool["should"].append({"term": {"doc_type": {"value": "pricing", "boost": 2.0}}})
+        # Boost conversation chunks (sample tickets) for support-style queries
+        base_bool["should"].append({"term": {"doc_type": {"value": "conversation", "boost": 1.8}}})
 
         # Function score: recency boost using effective_date (if present).
         # This helps prevent outdated policy/pricing chunks outranking newer ones.
@@ -488,9 +492,19 @@ class OpenSearchClient:
                         snippet = " … ".join(frags)
                         break
 
-            chunk_text = snippet.strip() if snippet else (src.get("chunk_text") or "")
-            if snippet_max_chars and len(chunk_text) > snippet_max_chars:
-                chunk_text = chunk_text[: snippet_max_chars - 1] + "…"
+            snippet_text = snippet.strip() if snippet else ""
+            if snippet_text and snippet_max_chars and len(snippet_text) > snippet_max_chars:
+                snippet_text = snippet_text[: snippet_max_chars - 1] + "…"
+            full_text = (src.get("chunk_text") or "")
+            chunk_text = (
+                snippet_text
+                if (prefer_snippet and snippet_text)
+                else (full_text or snippet_text)
+            )
+            # Keep snippets for debug/UI while preserving full chunk_text for rerank/evidence when requested.
+            metadata = dict(src)
+            if snippet_text:
+                metadata["highlight_snippet"] = snippet_text
 
             out.append(
                 SearchChunk(
@@ -500,7 +514,7 @@ class OpenSearchClient:
                     source_url=src.get("source_url") or "",
                     doc_type=src.get("doc_type") or "other",
                     score=score,
-                    metadata=src,
+                    metadata=metadata,
                 )
             )
 

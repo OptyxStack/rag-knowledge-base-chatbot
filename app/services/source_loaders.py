@@ -11,20 +11,20 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.core.config import get_settings
 
 def _doc_type_from_url(url: str) -> str:
-    """Infer doc_type from URL."""
+    """Infer doc_type from URL using config-driven keyword mapping."""
     url_lower = url.lower()
-    if "terms" in url_lower or "tos" in url_lower:
-        return "tos"
-    if "privacy" in url_lower or "policy" in url_lower:
-        return "policy"
-    if "faq" in url_lower or "faqs" in url_lower:
-        return "faq"
-    if "docs" in url_lower or "documentation" in url_lower:
-        return "howto"
-    if "vps" in url_lower or "billing" in url_lower or "store" in url_lower:
-        return "pricing"
+    mapping = get_settings().doc_type_url_keywords or {}
+    for doc_type, keywords in mapping.items():
+        dt = str(doc_type).strip().lower()
+        if not dt:
+            continue
+        for kw in (keywords or []):
+            token = str(kw).strip().lower()
+            if token and token in url_lower:
+                return dt
     return "other"
 
 
@@ -76,6 +76,7 @@ def load_plans_json(path: Path) -> list[dict[str, Any]]:
     with open(path) as f:
         data = json.load(f)
     docs = []
+    default_category = str(data.get("category") or "Plans").strip() or "Plans"
     for plan in data.get("plans", []):
         source_url = plan.get("source_url") or plan.get("order_link", "")
         plan_name = plan.get("plan_name", "unknown")
@@ -98,7 +99,7 @@ def load_plans_json(path: Path) -> list[dict[str, Any]]:
             "doc_type": "pricing",
             "metadata": {
                 "product": plan_name,
-                "category": "VPS Plans",
+                "category": str(plan.get("category") or default_category),
                 "plan_name": plan_name,
                 "price_raw": plan.get("price_raw"),
                 "order_link": plan.get("order_link"),
@@ -194,7 +195,6 @@ LOADERS: dict[str, Any] = {
     "pricing.json": load_pages_json,
     "other.json": load_pages_json,
     "howto.json": load_pages_json,
-    "greencloudvps_terms_of_service.json": load_pages_json,
     "sample_conversations.json": load_sample_conversations_json,
     "tickets.json": load_sample_conversations_json,  # backward compat
 }

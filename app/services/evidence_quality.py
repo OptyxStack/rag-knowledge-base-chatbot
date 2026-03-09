@@ -59,6 +59,14 @@ Critical: When evidence explicitly states the answer (e.g. "X is non-refundable"
 - For how-to queries: when evidence contains a guide/steps for the requested topic (e.g. "How to change SSH port on Linux" for "change port on Linux VPS"), set is_sufficient=true.
 """
 
+EVIDENCE_QUALITY_PROMPT = (
+    EVIDENCE_QUALITY_PROMPT
+    + "\n"
+    + "Coverage guidance:\n"
+    + "- When policy evidence states an exclusion (for example, discounted plans excluded), treat promo/discount/special-offer wording as synonymous for coverage.\n"
+    + "- For policy/refund questions: if policy_language evidence directly answers the question, set is_sufficient=true and coverage accordingly; do not require an extra product-detail requirement.\n"
+)
+
 
 def _build_fail_report(hard_requirements: list[str] | None) -> QualityReport:
     hard_reqs = list(dict.fromkeys(hard_requirements or []))
@@ -201,28 +209,6 @@ async def evaluate_quality(
         llm_pass = _coerce_bool(data.get("is_sufficient", data.get("pass")))
         confidence = _coerce_float(data.get("confidence"), default=0.5)
         reason = str(data.get("reason") or "").strip() or None
-
-        # Override: when reason says evidence answers the query but LLM returned is_sufficient=false
-        reason_lower = (reason or "").lower()
-        suggests_sufficient = any(
-            phrase in reason_lower
-            for phrase in (
-                "directly answers",
-                "directly addresses",
-                "clearly answers",
-                "explicitly states",
-                "explicitly answers",
-            )
-        )
-        if suggests_sufficient and llm_pass is False:
-            logger.info(
-                "evidence_quality_contradiction_override",
-                reason=reason,
-                original_is_sufficient=False,
-                override_to=True,
-                query_preview=(query or "")[:80],
-            )
-            llm_pass = True
 
         gaps = _to_str_list(data.get("gaps"))
         coverage_raw = data.get("coverage") or {}

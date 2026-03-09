@@ -75,7 +75,7 @@ def test_route_missing_evidence_quality():
     assert "https://example.com/page" in dr.partial_links
 
 
-def test_route_pass_weak_when_hard_requirements_are_covered():
+def test_route_asks_user_when_quality_gate_fails_even_with_partial_coverage():
     spec = QuerySpec(
         intent="transactional",
         entities=[],
@@ -103,10 +103,10 @@ def test_route_pass_weak_when_hard_requirements_are_covered():
 
     dr = route(spec, report, evidence, ["numbers_units", "has_any_url"], False)
 
-    assert dr.decision == "PASS"
-    assert dr.reason == "partial_sufficient"
-    assert dr.lane == "PASS_WEAK"
-    assert dr.answer_policy == "bounded"
+    assert dr.decision == "ASK_USER"
+    assert dr.reason == "missing_evidence_quality"
+    assert dr.lane == "ASK_USER"
+    assert dr.answer_policy == "clarify"
 
 
 def test_route_high_risk_insufficient():

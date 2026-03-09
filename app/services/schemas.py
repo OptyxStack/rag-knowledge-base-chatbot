@@ -35,6 +35,7 @@ class QuerySpec:
     answerable_without_clarification: bool = True  # False only when clarification is truly required
     hard_requirements: list[str] | None = None  # Must-have evidence to answer safely
     soft_requirements: list[str] | None = None  # Nice-to-have evidence for a stronger answer
+    doc_type_prior: list[str] | None = None  # Preferred doc types for retrieval (authoritative if provided)
     retrieval_profile: str = "generic_profile"  # pricing_profile | policy_profile | troubleshooting_profile | ...
     rewrite_candidates: list[str] | None = None  # Fallback rewritten queries for retrieval retry
     answer_mode_hint: str = "strong"  # strong | weak | ask_user

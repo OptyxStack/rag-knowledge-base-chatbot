@@ -1,10 +1,10 @@
-"""Tests for retrieval merge logic."""
+"""Tests for retrieval merge and planner-driven execution."""
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock
 
 from app.search.base import SearchChunk
 from app.services.retrieval import RetrievalService
+from app.services.schemas import QuerySpec, RetrievalPlan
 
 
 def test_merge_simple_by_chunk_id():
@@ -43,100 +43,134 @@ def test_merge_with_rrf():
 
 
 @pytest.mark.asyncio
-async def test_query_rewrite(monkeypatch):
-    """Query rewrite returns keyword and semantic (heuristic when LLM disabled)."""
-    svc = RetrievalService()
-    monkeypatch.setattr(svc, "_settings", type("S", (), {"query_rewriter_use_llm": False})())
-    qr = await svc._query_rewrite("refund policy")
-    assert qr.keyword_query
-    assert qr.semantic_query
-    assert "refund" in qr.keyword_query
-    assert "refund" in qr.semantic_query
+async def test_retrieve_uses_plan_budget_hint_as_authoritative(monkeypatch):
+    class FakeOpenSearch:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
 
+        async def search(
+            self,
+            query: str,
+            *,
+            top_n: int = 50,
+            doc_types: list[str] | None = None,
+            boost_pricing: bool = False,
+            prefer_snippet: bool = False,
+        ) -> list[SearchChunk]:
+            self.calls.append(
+                {
+                    "query": query,
+                    "top_n": top_n,
+                    "doc_types": list(doc_types or []),
+                    "boost_pricing": boost_pricing,
+                    "prefer_snippet": prefer_snippet,
+                }
+            )
+            return [
+                SearchChunk(
+                    "bm25-1",
+                    "d1",
+                    "Refund policy allows cancellation in 7 days.",
+                    "https://docs/policy",
+                    "policy",
+                    0.9,
+                )
+            ]
 
-@pytest.mark.asyncio
-async def test_query_rewrite_excludes_stopwords_from_context(monkeypatch):
-    """Context from 'hello what diff' should not add 'hello' to query."""
-    svc = RetrievalService()
-    monkeypatch.setattr(svc, "_settings", type("S", (), {"query_rewriter_use_llm": False})())
-    qr = await svc._query_rewrite(
-        "what diff from dedicated and vds?",
-        conversation_history=[
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "Hi! How can I help?"},
-            {"role": "user", "content": "what diff from dedicated and vds?"},
-        ],
+    class FakeQdrant:
+        def search(
+            self,
+            *,
+            vector: list[float],
+            top_n: int = 50,
+            doc_types: list[str] | None = None,
+        ) -> list[SearchChunk]:
+            _ = (vector, top_n, doc_types)
+            return [
+                SearchChunk(
+                    "vec-1",
+                    "d2",
+                    "Policy details include refund windows and terms.",
+                    "https://docs/policy-2",
+                    "policy",
+                    0.8,
+                )
+            ]
+
+    class FakeEmbedder:
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            _ = texts
+            return [[0.1, 0.2, 0.3]]
+
+    class FakeReranker:
+        async def rerank(self, query: str, chunks: list[SearchChunk], top_k: int):
+            _ = query
+            ranked = sorted(chunks, key=lambda c: c.score, reverse=True)
+            return [(c, c.score) for c in ranked[:top_k]]
+
+    opensearch = FakeOpenSearch()
+    svc = RetrievalService(
+        opensearch=opensearch,
+        qdrant=FakeQdrant(),
+        embedding_provider=FakeEmbedder(),
+        reranker=FakeReranker(),
     )
-    assert "hello" not in qr.keyword_query.lower()
-    assert "hello" not in qr.semantic_query.lower()
-
-
-@pytest.mark.asyncio
-async def test_query_rewrite_with_query_spec():
-    """When QuerySpec provided, use its keyword/semantic queries."""
-    from app.services.schemas import QuerySpec
-
-    svc = RetrievalService()
-    spec = QuerySpec(
-        intent="transactional",
-        entities=[],
-        constraints={},
-        required_evidence=[],
-        risk_level="low",
-        keyword_queries=["custom keyword query"],
-        semantic_queries=["custom semantic query"],
-        clarifying_questions=[],
-        is_ambiguous=False,
+    monkeypatch.setattr(
+        svc,
+        "_settings",
+        type(
+            "S",
+            (),
+            {
+                "retrieval_top_n": 50,
+                "retrieval_top_k": 8,
+                "retrieval_fusion": "simple",
+                "retrieval_rrf_k": 60,
+                "retrieval_plans_extra_chunks": 4,
+                "retrieval_ensure_doc_type_min": 0,
+                "evidence_selector_use_llm": False,
+                "evidence_selector_fallback_top_k": 8,
+            },
+        )(),
     )
-    qr = await svc._query_rewrite("original query", query_spec=spec)
-    assert qr.keyword_query == "custom keyword query"
-    assert qr.semantic_query == "custom semantic query"
 
-
-@pytest.mark.asyncio
-async def test_query_rewrite_uses_rewrite_candidates_on_retry():
-    """On retry without suggested_query, QuerySpec rewrite_candidates can refine the search query."""
-    from app.services.schemas import QuerySpec
-    from app.services.retry_planner import RetryStrategy
-
-    svc = RetrievalService()
-    spec = QuerySpec(
-        intent="transactional",
-        entities=[],
-        constraints={},
-        required_evidence=[],
-        risk_level="low",
-        keyword_queries=["pricing query"],
-        semantic_queries=["pricing query"],
-        clarifying_questions=[],
-        is_ambiguous=False,
-        rewrite_candidates=["pricing query", "dedicated server monthly pricing"],
-    )
-    qr = await svc._query_rewrite(
-        "original query",
-        retry_strategy=RetryStrategy(boost_patterns=["USD"]),
-        query_spec=spec,
-    )
-    assert qr.semantic_query == "dedicated server monthly pricing"
-    assert "USD" in qr.keyword_query
-
-
-def test_resolve_retrieval_profile_prefers_query_spec():
-    """QuerySpec retrieval_profile should override fallback keyword heuristics."""
-    from app.services.schemas import QuerySpec
-
-    svc = RetrievalService()
     spec = QuerySpec(
         intent="policy",
         entities=[],
         constraints={},
-        required_evidence=[],
-        risk_level="low",
-        keyword_queries=[],
-        semantic_queries=[],
+        required_evidence=["policy_language"],
+        risk_level="high",
+        keyword_queries=["fallback query from spec"],
+        semantic_queries=["fallback query from spec"],
         clarifying_questions=[],
         is_ambiguous=False,
+        hard_requirements=["different_requirement"],
         retrieval_profile="policy_profile",
+        doc_type_prior=["faq"],
     )
-    profile = svc._resolve_retrieval_profile("vps plans and price", spec)
-    assert profile == "policy_profile"
+    plan = RetrievalPlan(
+        profile="policy_profile",
+        attempt_index=1,
+        reason="test_plan",
+        query_keyword="refund cancellation policy",
+        query_semantic="refund cancellation policy",
+        preferred_doc_types=["policy"],
+        fetch_n=11,
+        rerank_k=2,
+        budget_hint={
+            "hard_requirements": ["policy_language"],
+            "ensure_doc_types": ["policy"],
+            "boost_pricing": False,
+        },
+    )
+
+    pack = await svc.retrieve(
+        "original query",
+        query_spec=spec,
+        retrieval_plan=plan,
+    )
+
+    assert pack.retrieval_stats["query_rewrite"]["keyword_query"] == "refund cancellation policy"
+    assert pack.retrieval_stats["hard_requirements"] == ["policy_language"]
+    assert opensearch.calls[0]["top_n"] == 11
+    assert opensearch.calls[0]["doc_types"] == ["policy"]

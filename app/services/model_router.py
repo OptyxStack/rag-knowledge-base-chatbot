@@ -11,7 +11,7 @@ TASK_PRIMARY = frozenset({"generate", "self_critic"})
 TASK_ECONOMY = frozenset({
     "normalizer", "decision_router", "evidence_evaluator", "evidence_quality",
     "final_polish", "doc_type_classifier", "query_rewriter", "evidence_selector",
-    "chunk_filter", "branding_auto_generator",
+    "branding_auto_generator",
 })
 
 

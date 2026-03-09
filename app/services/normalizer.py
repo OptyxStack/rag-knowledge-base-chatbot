@@ -8,7 +8,8 @@ Goals:
 - Fallback only when LLM fails (keeps pipeline alive).
 
 Notes:
-- We treat required_evidence as SOFT by default (hard_requirements=[]), to keep the system flexible.
+- QuerySpec is the retrieval control plane. Prefer explicit retrieval_profile,
+  hard_requirements and doc_type_prior from LLM output when available.
 """
 
 from __future__ import annotations
@@ -19,6 +20,11 @@ from typing import Any
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.llm_gateway import get_llm_gateway
+from app.services.retrieval_planner import (
+    derive_hard_requirements,
+    infer_retrieval_profile,
+    sanitize_retrieval_profile,
+)
 from app.services.schemas import QuerySpec
 
 logger = get_logger(__name__)
@@ -46,7 +52,11 @@ Schema:
   "entities": ["..."],
 
   "required_evidence": ["..."],
+  "hard_requirements": ["..."],
+  "soft_requirements": ["..."],
   "risk_level": "low|medium|high",
+  "retrieval_profile": "pricing_profile|policy_profile|troubleshooting_profile|comparison_profile|account_profile|generic_profile",
+  "doc_type_prior": ["pricing", "policy", "faq", "howto", "docs", "tos"],
 
   "is_ambiguous": false,
   "clarifying_questions": [],
@@ -73,6 +83,13 @@ Guidance (non-binding):
 - keyword_queries / semantic_queries: focus on the resolved question (1–2 each). Empty when skip_retrieval.
 - retrieval_rewrites: 0–5 short variations for retry. Empty when skip_retrieval.
 """
+NORMALIZER_SYSTEM_PROMPT = (
+    NORMALIZER_SYSTEM_PROMPT
+    + "\n"
+    + "Additional evidence guidance:\n"
+    + "- required_evidence / hard_requirements / soft_requirements: use only standard evidence types: policy_language, numbers_units, transaction_link, steps_structure, has_any_url.\n"
+    + "- Do not invent ad-hoc evidence types such as 'promo plan details' or product-specific labels.\n"
+)
 
 
 def _get_greeting_response() -> str:
@@ -111,6 +128,8 @@ def _extract_probable_json(text: str) -> str:
 
 
 def _as_str(v: Any, default: str = "") -> str:
+    if v is None:
+        return default
     try:
         return str(v).strip()
     except Exception:
@@ -207,6 +226,61 @@ def _build_rewrite_candidates(
     return out[:12]
 
 
+def _apply_config_overrides(
+    *,
+    query: str,
+    llm_entities: list[str],
+    llm_slots: dict[str, Any],
+) -> tuple[list[str], dict[str, Any], list[str]]:
+    """Apply compatibility overrides from settings for legacy deployments."""
+    settings = get_settings()
+    ql = (query or "").lower()
+    entities = list(llm_entities)
+    slots = dict(llm_slots or {})
+    overrides: list[str] = []
+
+    domain_terms = [t.strip().lower() for t in (settings.normalizer_domain_terms or "").split(",") if t.strip()]
+    if domain_terms:
+        overrides.append("normalizer_domain_terms")
+        seen = {e.lower() for e in entities}
+        for t in domain_terms:
+            if t in ql and t not in seen:
+                entities.append(t)
+                seen.add(t)
+
+    if settings.normalizer_query_expansion:
+        overrides.append("normalizer_query_expansion")
+
+    if settings.normalizer_slots_enabled:
+        overrides.append("normalizer_slots_enabled")
+        product_types = [
+            t.strip().lower()
+            for t in (settings.normalizer_slot_product_types or "").split(",")
+            if t.strip()
+        ]
+        os_types = [
+            t.strip().lower()
+            for t in (settings.normalizer_slot_os_types or "").split(",")
+            if t.strip()
+        ]
+        if product_types:
+            overrides.append("normalizer_slot_product_types")
+            if "product_type" not in slots:
+                for p in product_types:
+                    if p in ql:
+                        slots["product_type"] = p
+                        break
+        if os_types:
+            overrides.append("normalizer_slot_os_types")
+            if "os" not in slots:
+                for os_name in os_types:
+                    if os_name in ql:
+                        slots["os"] = os_name
+                        break
+
+    return entities, slots, list(dict.fromkeys(overrides))
+
+
 async def _normalize_llm(
     query: str,
     conversation_history: list[dict[str, str]] | None,
@@ -262,6 +336,9 @@ async def _normalize_llm(
 
         entities = _as_str_list(payload.get("entities"), limit=12)
         required_evidence = _as_str_list(payload.get("required_evidence"), limit=10)
+        explicit_hard_requirements = _as_str_list(payload.get("hard_requirements"), limit=10)
+        explicit_soft_requirements = _as_str_list(payload.get("soft_requirements"), limit=10)
+        doc_type_prior = _as_str_list(payload.get("doc_type_prior"), limit=8)
 
         is_ambiguous = _as_bool(payload.get("is_ambiguous"), False)
         clarifying_questions = _as_str_list(payload.get("clarifying_questions"), limit=3)
@@ -282,6 +359,11 @@ async def _normalize_llm(
             semantic_queries = [canonical_query_en.strip() or query.strip()]
 
         slots = _parse_llm_slots(payload)
+        entities, slots, config_overrides_applied = _apply_config_overrides(
+            query=query.strip(),
+            llm_entities=entities,
+            llm_slots=slots,
+        )
         constraints = dict(slots) if slots else {}
 
         rewrite_candidates = _build_rewrite_candidates(
@@ -292,13 +374,28 @@ async def _normalize_llm(
             retrieval_rewrites=retrieval_rewrites,
         )
 
-        # Keep these flexible: treat required_evidence as soft, not hard.
-        hard_requirements: list[str] = []
-        soft_requirements: list[str] = list(required_evidence)
-
         answer_mode_hint = "ask_user" if is_ambiguous else "strong"
-
         intent = "social" if skip_retrieval else _sanitize_intent(payload.get("intent"))
+        hard_requirements = derive_hard_requirements(
+            explicit_hard_requirements,
+            required_evidence,
+            risk_level,
+        )
+        soft_requirements: list[str] = (
+            explicit_soft_requirements if explicit_soft_requirements else list(required_evidence)
+        )
+        retrieval_profile = sanitize_retrieval_profile(payload.get("retrieval_profile"))
+        if not retrieval_profile:
+            retrieval_profile = infer_retrieval_profile(
+                intent=intent,
+                required_evidence=required_evidence,
+                hard_requirements=hard_requirements,
+            )
+
+        if doc_type_prior:
+            constraints = dict(constraints)
+            constraints["doc_type_prior"] = doc_type_prior
+
         spec = QuerySpec(
             intent=intent,
             entities=entities,
@@ -322,11 +419,12 @@ async def _normalize_llm(
             answerable_without_clarification=not is_ambiguous,
             hard_requirements=hard_requirements,
             soft_requirements=soft_requirements,
-            retrieval_profile="generic_profile",
+            doc_type_prior=doc_type_prior,
+            retrieval_profile=retrieval_profile,
             rewrite_candidates=([] if skip_retrieval else rewrite_candidates),
             answer_mode_hint=answer_mode_hint,
             extraction_mode="llm_primary",
-            config_overrides_applied=[],
+            config_overrides_applied=config_overrides_applied,
         )
 
         logger.info(
@@ -336,6 +434,8 @@ async def _normalize_llm(
             is_ambiguous=spec.is_ambiguous,
             skip_retrieval=spec.skip_retrieval,
             required_evidence=spec.required_evidence,
+            hard_requirements=spec.hard_requirements,
+            retrieval_profile=spec.retrieval_profile,
             translated=spec.translation_needed,
             canonical_query_preview=(canonical_query_en[:120] if canonical_query_en else None),
         )
@@ -373,6 +473,7 @@ def _build_minimal_fallback(query: str, source_lang: str | None = None) -> Query
         answerable_without_clarification=True,
         hard_requirements=[],
         soft_requirements=[],
+        doc_type_prior=[],
         retrieval_profile="generic_profile",
         rewrite_candidates=[q] if q else [],
         answer_mode_hint="strong",

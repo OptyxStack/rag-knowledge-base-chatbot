@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from html import unescape
 from typing import Any
@@ -32,6 +33,15 @@ def _clean_html(html: str, base_url: str | None = None) -> str:
     for tag in soup(["script", "style", "nav", "footer", "header"]):
         tag.decompose()
 
+    # Preserve heading structure as markdown-like markers so chunking can keep semantic boundaries.
+    for heading in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+        text = heading.get_text(" ", strip=True)
+        if not text:
+            continue
+        level = int(heading.name[1]) if heading.name and len(heading.name) == 2 else 2
+        level = max(1, min(level, 6))
+        heading.replace_with(f"\n{'#' * level} {text}\n")
+
     if base_url:
         for a in soup.find_all("a", href=True):
             href = a.get("href", "").strip()
@@ -53,12 +63,24 @@ def _clean_html(html: str, base_url: str | None = None) -> str:
     return text.strip()
 
 
-def _extract_headings(soup: BeautifulSoup) -> str:
-    """Extract heading hierarchy as string."""
-    headings = []
-    for tag in soup.find_all(["h1", "h2", "h3", "h4"]):
-        headings.append(tag.get_text(strip=True))
-    return " | ".join(headings)
+def _get_tokenizer():
+    try:
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        return tiktoken.get_encoding("gpt2")
+
+
+def _count_tokens(text: str, *, enc=None) -> int:
+    tokenizer = enc or _get_tokenizer()
+    return len(tokenizer.encode(text or ""))
+
+
+@dataclass
+class PreparedChunk:
+    chunk_text: str
+    headings: str
+    parent_ref: str | None = None
+    parent_heading: str | None = None
 
 
 def _chunk_by_semantic_boundaries(
@@ -66,59 +88,126 @@ def _chunk_by_semantic_boundaries(
     min_tokens: int = 300,
     max_tokens: int = 700,
 ) -> list[tuple[str, str]]:
-    """Chunk text by headings/paragraphs. Returns list of (chunk_text, headings)."""
-    try:
-        enc = tiktoken.get_encoding("cl100k_base")
-    except Exception:
-        enc = tiktoken.get_encoding("gpt2")
+    """Chunk text by headings/paragraphs into semantic chunks."""
+    if not text.strip():
+        return []
 
-    def count_tokens(s: str) -> int:
-        return len(enc.encode(s))
+    max_tokens = max(max_tokens, 1)
+    min_tokens = max(1, min(min_tokens, max_tokens))
+    enc = _get_tokenizer()
 
-    # Split by double newlines and headings
-    blocks = re.split(r"\n(?=#{1,6}\s|\n\n)", text)
-    blocks = [b.strip() for b in blocks if b.strip()]
+    def _split_oversized(block: str) -> list[str]:
+        if _count_tokens(block, enc=enc) <= max_tokens:
+            return [block]
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", block) if s.strip()]
+        if not sentences:
+            sentences = [w.strip() for w in re.split(r"\s+", block) if w.strip()]
+        parts: list[str] = []
+        current: list[str] = []
+        current_tokens = 0
+        for sentence in sentences:
+            sentence_tokens = _count_tokens(sentence, enc=enc)
+            if current and current_tokens + sentence_tokens > max_tokens:
+                parts.append(" ".join(current).strip())
+                current = [sentence]
+                current_tokens = sentence_tokens
+            else:
+                current.append(sentence)
+                current_tokens += sentence_tokens
+        if current:
+            parts.append(" ".join(current).strip())
+        return [p for p in parts if p]
+
+    blocks = re.split(r"\n\s*\n+", text)
+    normalized_blocks: list[str] = []
+    for block in blocks:
+        raw = (block or "").strip()
+        if not raw:
+            continue
+        normalized_blocks.extend(_split_oversized(raw))
 
     chunks: list[tuple[str, str]] = []
-    current = []
-    current_headings = ""
+    current_parts: list[str] = []
     current_tokens = 0
+    current_heading = ""
 
-    for block in blocks:
-        block_tokens = count_tokens(block)
-        # Check if block is a heading
+    for block in normalized_blocks:
         heading_match = re.match(r"^(#{1,6})\s+(.+)$", block)
-        if heading_match:
-            level, title = heading_match.groups()
-            current_headings = title
-            if current and current_tokens >= min_tokens:
-                chunk_text = "\n\n".join(current)
-                chunks.append((chunk_text, prev_headings))
-                current = [block]
-                prev_headings = current_headings
-                current_tokens = block_tokens
-            else:
-                current.append(block)
-                prev_headings = current_headings
-                current_tokens += block_tokens
+        heading_title = heading_match.group(2).strip() if heading_match else ""
+
+        # Start a new chunk at heading boundaries when current chunk is already meaningful.
+        if heading_title and current_parts and current_tokens >= min_tokens:
+            chunks.append(("\n\n".join(current_parts).strip(), current_heading))
+            current_parts = []
+            current_tokens = 0
+
+        if heading_title:
+            current_heading = heading_title
+
+        block_tokens = _count_tokens(block, enc=enc)
+        should_flush = (
+            current_parts
+            and current_tokens >= min_tokens
+            and current_tokens + block_tokens > max_tokens
+        )
+        if should_flush:
+            chunks.append(("\n\n".join(current_parts).strip(), current_heading))
+            current_parts = [block]
+            current_tokens = block_tokens
         else:
-            if current_tokens + block_tokens > max_tokens and current and current_tokens >= min_tokens:
-                chunk_text = "\n\n".join(current)
-                chunks.append((chunk_text, current_headings))
-                current = [block]
-                current_tokens = block_tokens
-            else:
-                current.append(block)
-                current_tokens += block_tokens
+            current_parts.append(block)
+            current_tokens += block_tokens
 
-    if current:
-        chunk_text = "\n\n".join(current)
-        chunks.append((chunk_text, current_headings))
+    if current_parts:
+        chunks.append(("\n\n".join(current_parts).strip(), current_heading))
 
-    return chunks
+    return [(chunk_text, headings) for chunk_text, headings in chunks if chunk_text]
 
 
-def prepare_document(doc: dict[str, Any]) -> tuple[str, str, list[tuple[str, str]]]:
+def _expand_to_semantic_units(
+    parent_chunks: list[tuple[str, str]],
+    *,
+    unit_min_tokens: int,
+    unit_max_tokens: int,
+    include_parent_refs: bool,
+) -> list[PreparedChunk]:
+    """Split parent chunks into smaller semantic units and keep optional parent refs."""
+    units: list[PreparedChunk] = []
+    parent_total = len(parent_chunks)
+    for parent_idx, (parent_text, parent_heading) in enumerate(parent_chunks):
+        child_chunks = _chunk_by_semantic_boundaries(
+            parent_text,
+            min_tokens=unit_min_tokens,
+            max_tokens=unit_max_tokens,
+        )
+        if not child_chunks:
+            child_chunks = [(parent_text, parent_heading)]
+
+        parent_ref = None
+        if include_parent_refs:
+            parent_ref = f"p{parent_idx}:{_checksum(parent_text)[:12]}"
+
+        for child_text, child_heading in child_chunks:
+            units.append(
+                PreparedChunk(
+                    chunk_text=child_text,
+                    headings=child_heading or parent_heading,
+                    parent_ref=parent_ref,
+                    parent_heading=parent_heading or None,
+                )
+            )
+
+    if units:
+        logger.info(
+            "ingestion_semantic_chunking",
+            parent_chunks=parent_total,
+            semantic_units=len(units),
+            parent_refs=include_parent_refs,
+        )
+    return units
+
+
+def prepare_document(doc: dict[str, Any]) -> tuple[str, str, list[PreparedChunk]]:
     """Clean and chunk a document. Returns (cleaned_content, raw_content, chunks)."""
     raw = doc.get("raw_text") or doc.get("raw_html") or doc.get("content", "")
     base_url = doc.get("url") or doc.get("source_url")
@@ -128,10 +217,18 @@ def prepare_document(doc: dict[str, Any]) -> tuple[str, str, list[tuple[str, str
         cleaned = raw
 
     settings = get_settings()
-    chunks = _chunk_by_semantic_boundaries(
+    parent_chunks = _chunk_by_semantic_boundaries(
         cleaned,
         min_tokens=settings.chunk_min_tokens,
         max_tokens=settings.chunk_max_tokens,
+    )
+    semantic_min = max(1, settings.chunk_semantic_min_tokens)
+    semantic_max = max(semantic_min, settings.chunk_semantic_max_tokens)
+    chunks = _expand_to_semantic_units(
+        parent_chunks,
+        unit_min_tokens=semantic_min,
+        unit_max_tokens=semantic_max,
+        include_parent_refs=settings.chunk_parent_refs_enabled,
     )
     return cleaned, raw, chunks
 
@@ -168,7 +265,7 @@ class IngestionService:
             except ValueError:
                 effective_date = None
 
-        cleaned, raw, chunk_tuples = prepare_document(doc)
+        cleaned, raw, prepared_chunks = prepare_document(doc)
         checksum = _checksum(cleaned)
 
         # Optional: store raw doc in object storage
@@ -243,11 +340,17 @@ class IngestionService:
         self._qdrant.ensure_collection(self._embedder.dimensions())
 
         # Create chunks and index
-        for idx, (chunk_text, headings) in enumerate(chunk_tuples):
-            token_count = len(tiktoken.get_encoding("cl100k_base").encode(chunk_text))
+        for idx, prepared in enumerate(prepared_chunks):
+            chunk_text = prepared.chunk_text
+            headings = prepared.headings
+            token_count = _count_tokens(chunk_text)
             chunk_checksum = _checksum(chunk_text)
 
             chunk_meta = {"headings": headings, "doc_type": doc_type}
+            if prepared.parent_ref:
+                chunk_meta["parent_ref"] = prepared.parent_ref
+            if prepared.parent_heading:
+                chunk_meta["parent_heading"] = prepared.parent_heading
             if metadata:
                 chunk_meta.update({k: v for k, v in metadata.items() if k in ("product", "category", "key_points") and v is not None})
             chunk = Chunk(
@@ -264,6 +367,10 @@ class IngestionService:
             # Embed and index
             vectors = await self._embedder.embed([chunk_text])
             qdrant_meta = {"headings": headings}
+            if prepared.parent_ref:
+                qdrant_meta["parent_ref"] = prepared.parent_ref
+            if prepared.parent_heading:
+                qdrant_meta["parent_heading"] = prepared.parent_heading
             if metadata:
                 qdrant_meta.update({k: v for k, v in metadata.items() if k in ("product", "category") and v is not None})
             self._qdrant.upsert_chunk(
@@ -288,5 +395,5 @@ class IngestionService:
             )
 
         await db_session.commit()
-        logger.info("ingest_complete", document_id=document_id, chunks=len(chunk_tuples))
+        logger.info("ingest_complete", document_id=document_id, chunks=len(prepared_chunks))
         return document_id

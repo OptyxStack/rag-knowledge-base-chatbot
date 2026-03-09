@@ -29,7 +29,7 @@ CORE_RULES = """You are a RAG assistant. Ground all factual claims (prices, link
 CORE RULES (always enforced):
 1. For facts, prices, links, policy, specs: use ONLY the evidence. Do not add or infer facts from your training.
 2. When listing items, include ONLY what is explicitly named in the evidence. Never infer or add similar items.
-3. Always cite your sources. For each key claim, include a citation with chunk_id and source_url.
+3. Always cite your sources. Put citations ONLY in the citations array (chunk_id, source_url, doc_type). Do NOT include chunk_id, source_url, or [chunk_id, url] in the answer text.
 4. If you cite a chunk, it MUST be in the evidence list.
 5. Respond with valid JSON matching the output schema. No markdown, no extra text—only the JSON object."""
 
@@ -89,7 +89,6 @@ def _get_fallback_intents() -> list[tuple[str, str, str]]:
         ("who_are_you", r"\b(who are you|bạn là ai|ai là gì)\b", f"I'm {prefix}AI support assistant. I answer questions using the provided documentation. How can I help?"),
         ("who_am_i", r"\b(who am i|tôi là ai|mình là ai)\b", "I don't have access to your account details. For billing or account management, please log in to your account or contact support."),
         ("about", r"\b(what is|about|who are you|giới thiệu)\s+(?:this (?:company|service)|us|your (?:company|service))\b", f"I'm {prefix}AI support assistant. I help answer questions using our documentation. What would you like to know?"),
-        ("refund_policy", r"\b(do you have|do u have|what(?:'s| is)|tell me about)\s+(?:a |your? )?refund\s*policy\b|\brefund\s*policy\??\s*$|chính sách hoàn tiền", "Please refer to our Terms of Service for the refund policy. I can search our docs for specific details if you have a question."),
         ("hello", r"^(hi|hello|hey|chào|xin chào)\s*!?$", f"Hello! {welcome}How can I help you today?"),
     ]
 
@@ -245,6 +244,11 @@ def match_intent(query: str) -> IntentMatch | None:
     settings = get_settings()
     if not getattr(settings, "intent_cache_enabled", True):
         return None
+    disabled_keys = {
+        str(key).strip().lower()
+        for key in (getattr(settings, "intent_cache_disabled_keys", None) or [])
+        if str(key).strip()
+    }
 
     q = query.strip().lower()
     if len(q) > 200:
@@ -252,6 +256,8 @@ def match_intent(query: str) -> IntentMatch | None:
 
     intents = get_intents()
     for intent_key, patterns, answer in intents:
+        if intent_key.strip().lower() in disabled_keys:
+            continue
         if not patterns or not answer:
             continue
         try:

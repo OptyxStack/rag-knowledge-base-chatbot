@@ -1,32 +1,42 @@
-"""Evidence Hygiene – Phase 0.5: Boilerplate detection, content density, signatures.
+"""Evidence Hygiene - Phase 0.5: boilerplate detection, content density, signatures.
 
 Logging only, no gating. Use data to tune Phase 1 thresholds.
 """
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.search.base import EvidenceChunk
 
 logger = get_logger(__name__)
 
-# Boilerplate signatures (nav/footer)
-BOILERPLATE_PATTERNS = [
-    r"\bcontact\s+(?:us|support)\b",
-    r"\bcopyright\s+©?\s*\d{4}",
-    r"\b(?:privacy|terms)\s+(?:of\s+)?(?:service|policy)\b",
-    r"\bmenu\b",
-    r"\ball\s+rights\s+reserved\b",
-    r"\bsign\s+(?:in|up)\b",
-    r"\blogin\b",
-    r"\bcart\b",
-    r"\bcheckout\b",
-    r"\bnav(?:igation)?\b",
-    r"\bfooter\b",
-    r"\bcookie\s+policy\b",
-]
-BOILERPLATE_RE = re.compile("|".join(BOILERPLATE_PATTERNS), re.I)
+
+@lru_cache(maxsize=64)
+def _compile_union(patterns: tuple[str, ...]) -> re.Pattern[str]:
+    valid: list[str] = []
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+            valid.append(pattern)
+        except re.error:
+            logger.warning("evidence_hygiene_invalid_pattern", pattern=pattern)
+    if not valid:
+        return re.compile(r"$^")
+    return re.compile("|".join(f"(?:{p})" for p in valid), re.I)
+
+
+def _boilerplate_re() -> re.Pattern[str]:
+    settings = get_settings()
+    patterns = tuple(
+        str(pattern).strip()
+        for pattern in (settings.hygiene_boilerplate_patterns or [])
+        if str(pattern).strip()
+    )
+    return _compile_union(patterns)
+
 
 # Number + unit patterns
 NUMBER_UNIT_PATTERN = re.compile(
@@ -43,14 +53,15 @@ URL_PATTERN = re.compile(
     re.I,
 )
 
-# Transaction link paths + product pages (order/store, billing, dedicated, proxies)
-TRANSACTION_PATH_PATTERN = re.compile(
-    r"/(?:order|store|checkout|cart|buy|purchase|subscribe|billing)/?|"
-    r"/(?:dedicated-servers|proxies|semi-dedicated|vps)/?|"
-    r"(?:dedicated-servers|proxies|semi-dedicated|-vps|vps|billing)\.(?:php|html?)|"
-    r"order_link|order\s*link",
-    re.I,
-)
+
+def _transaction_path_re() -> re.Pattern[str]:
+    settings = get_settings()
+    patterns = tuple(
+        str(pattern).strip()
+        for pattern in (settings.hygiene_transaction_path_patterns or [])
+        if str(pattern).strip()
+    )
+    return _compile_union(patterns)
 
 
 @dataclass
@@ -83,7 +94,7 @@ def _boilerplate_ratio(text: str) -> float:
     """Ratio of boilerplate signatures vs substantive content. 0=good, 1=bad."""
     if not text or not text.strip():
         return 1.0
-    matches = BOILERPLATE_RE.findall(text)
+    matches = _boilerplate_re().findall(text)
     match_count = len(matches)
     words = len(text.split())
     if words < 5:
@@ -104,7 +115,7 @@ def _content_density(text: str) -> float:
     sentences = len(re.split(r"[.!?]+", stripped))
     # Bonus for structure (lists, numbered steps)
     has_structure = bool(
-        re.search(r"\b\d+[.)]\s|\b(?:step|first|second)\b|\n\s*[-*•]", text, re.I)
+        re.search(r"\b\d+[.)]\s|\b(?:step|first|second)\b|\n\s*[-*]", text, re.I)
     )
     density = ratio * (1 + 0.1 * min(sentences, 5))
     if has_structure:
@@ -123,7 +134,7 @@ def _has_number_unit(text: str) -> bool:
 def _has_transaction_link(text: str, source_url: str = "") -> bool:
     """Check if URL in text or source_url is transactional (order/store/checkout)."""
     combined = f"{text or ''} {source_url or ''}"
-    return bool(TRANSACTION_PATH_PATTERN.search(combined))
+    return bool(_transaction_path_re().search(combined))
 
 
 def compute_hygiene(chunks: list[EvidenceChunk]) -> EvidenceSignatures:

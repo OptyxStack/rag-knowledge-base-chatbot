@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 class ReviewerStatus(str, Enum):
     PASS = "PASS"
     ASK_USER = "ASK_USER"
-    RETRIEVE_MORE = "RETRIEVE_MORE"
+    RETRIEVE_MORE = "RETRIEVE_MORE"  # legacy compatibility
     ESCALATE = "ESCALATE"
     TRIM_UNSUPPORTED = "TRIM_UNSUPPORTED"
     DOWNGRADE_LANE = "DOWNGRADE_LANE"
@@ -44,30 +44,34 @@ class ReviewerResult:
     claim_to_citation_map: dict[str, list[str]] = field(default_factory=dict)
 
 
-# High-risk query patterns
-HIGH_RISK_PATTERNS = [
-    r"\b(refund|reimburse|money back)\b",
-    r"\b(billing|invoice|payment dispute)\b",
-    r"\b(legal|lawsuit|attorney)\b",
-    r"\b(abuse|fraud|violation)\b",
-    r"\b(cancel.*subscription|terminate)\b",
-]
-
-# Policy doc types required for high-risk
-REQUIRED_POLICY_DOC_TYPES = {"policy", "tos"}
-
-
 def _is_high_risk_query(query: str) -> bool:
-    """Check if query matches high-risk patterns."""
+    """Check if query matches configured high-risk patterns."""
+    patterns = [p for p in (get_settings().reviewer_high_risk_patterns or []) if str(p).strip()]
+    if not patterns:
+        return False
     q = query.lower()
-    return any(re.search(p, q, re.I) for p in HIGH_RISK_PATTERNS)
+    for pattern in patterns:
+        try:
+            if re.search(pattern, q, re.I):
+                return True
+        except re.error:
+            logger.warning("reviewer_invalid_high_risk_pattern", pattern=pattern)
+    return False
 
 
 def _has_policy_citation(citations: list[dict], evidence: list[EvidenceChunk]) -> bool:
-    """Check if any citation references policy/tos doc_type."""
+    """Check if any citation references configured policy-like doc_type."""
     cited_ids = {c.get("chunk_id") for c in citations}
+    required_types = {
+        str(t).strip().lower()
+        for t in (get_settings().reviewer_policy_doc_types or [])
+        if str(t).strip()
+    }
+    if not required_types:
+        evidence_ids = {e.chunk_id for e in evidence}
+        return bool(cited_ids & evidence_ids)
     for e in evidence:
-        if e.chunk_id in cited_ids and e.doc_type in REQUIRED_POLICY_DOC_TYPES:
+        if e.chunk_id in cited_ids and (e.doc_type or "").lower() in required_types:
             return True
     return False
 
@@ -94,16 +98,14 @@ def _has_uncited_numbers(answer: str) -> bool:
 
 
 def _has_uncited_policy_claims(answer: str) -> bool:
-    """Heuristic: policy-like phrases that should be cited."""
-    policy_phrases = [
-        r"according to (?:our |the )?policy",
-        r"(?:we |the company )?(?:shall|must|may not)",
-        r"within \d+ (?:days|hours)",
-        r"(?:eligible|entitled) (?:for|to)",
-    ]
-    for p in policy_phrases:
-        if re.search(p, answer, re.I):
-            return True
+    """Heuristic: configured policy-like phrases that should be cited."""
+    for pattern in (get_settings().reviewer_policy_claim_patterns or []):
+        try:
+            if re.search(pattern, answer, re.I):
+                return True
+        except re.error:
+            logger.warning("reviewer_invalid_policy_claim_pattern", pattern=pattern)
+            continue
     return False
 
 
@@ -248,8 +250,8 @@ class ReviewerGate:
         lane: str | None = None,
     ) -> ReviewerResult:
         """Run reviewer checks. Returns status and reasons."""
+        _ = (retrieval_attempt, max_attempts, confidence, query)
         reasons: list[str] = []
-        suggested_queries: list[str] = []
         missing_fields: list[str] = []
         is_bounded = _is_bounded_answer(answer, answer_policy, lane)
 
@@ -296,9 +298,9 @@ class ReviewerGate:
                         claim_to_citation_map=cm,
                     )
                 return ReviewerResult(
-                    status=ReviewerStatus.RETRIEVE_MORE,
+                    status=ReviewerStatus.ASK_USER,
                     reasons=reasons,
-                    suggested_queries=[query, f"{query} pricing"],
+                    suggested_queries=[],
                     missing_fields=[],
                 )
 
@@ -326,9 +328,9 @@ class ReviewerGate:
                         claim_to_citation_map=cm,
                     )
                 return ReviewerResult(
-                    status=ReviewerStatus.RETRIEVE_MORE,
+                    status=ReviewerStatus.ASK_USER,
                     reasons=reasons,
-                    suggested_queries=[query, f"{query} policy"],
+                    suggested_queries=[],
                     missing_fields=[],
                 )
 
@@ -363,9 +365,9 @@ class ReviewerGate:
                         claim_to_citation_map=cm,
                     )
                 return ReviewerResult(
-                    status=ReviewerStatus.RETRIEVE_MORE,
+                    status=ReviewerStatus.ASK_USER,
                     reasons=reasons,
-                    suggested_queries=[query],
+                    suggested_queries=[],
                     missing_fields=[],
                 )
 
@@ -394,19 +396,10 @@ class ReviewerGate:
                 missing_fields=[],
             )
 
-        # 4. RETRIEVE_MORE - check attempt limit
-        if retrieval_attempt >= max_attempts:
-            reasons.append(f"Max retrieval attempts ({max_attempts}) reached")
-            return ReviewerResult(
-                status=ReviewerStatus.ASK_USER,
-                reasons=reasons,
-                suggested_queries=[],
-                missing_fields=["clarification"],
-            )
-
+        reasons.append("Unsupported reviewer input decision; defaulting to ASK_USER")
         return ReviewerResult(
-            status=ReviewerStatus.RETRIEVE_MORE,
+            status=ReviewerStatus.ASK_USER,
             reasons=reasons,
-            suggested_queries=[query],
-            missing_fields=[],
+            suggested_queries=[],
+            missing_fields=["clarification"],
         )

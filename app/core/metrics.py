@@ -122,6 +122,38 @@ escalation_rate = Counter(
     "Total escalations",
 )
 
+# Offline Evaluation (Phase 4)
+offline_eval_runs_total = Counter(
+    "support_ai_offline_eval_runs_total",
+    "Offline evaluation runs executed",
+    ["status"],  # success | failed
+)
+offline_eval_cases_total = Counter(
+    "support_ai_offline_eval_cases_total",
+    "Offline evaluation cases processed",
+    ["outcome"],  # pass | fail
+)
+offline_eval_retrieval_recall = Histogram(
+    "support_ai_offline_eval_retrieval_recall",
+    "Offline eval retrieval recall ratio",
+    buckets=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+)
+offline_eval_evidence_coverage = Histogram(
+    "support_ai_offline_eval_evidence_coverage",
+    "Offline eval required-evidence coverage ratio",
+    buckets=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+)
+offline_eval_answer_correctness = Histogram(
+    "support_ai_offline_eval_answer_correctness",
+    "Offline eval answer correctness ratio",
+    buckets=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+)
+offline_eval_hallucination_rate = Histogram(
+    "support_ai_offline_eval_hallucination_rate",
+    "Offline eval hallucination rate",
+    buckets=[0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0],
+)
+
 # API
 api_requests_total = Counter(
     "support_ai_api_requests_total",

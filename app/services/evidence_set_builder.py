@@ -11,24 +11,42 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.core.config import get_settings
 from app.search.base import EvidenceChunk, SearchChunk
 from app.services.schemas import CandidatePool, EvidenceSet, QuerySpec, RetrievalPlan
 
 
 def _chunk_satisfies_requirement(chunk: SearchChunk, req: str) -> bool:
-    """Heuristic: does chunk satisfy a requirement?"""
+    """Config-driven fallback heuristic: does chunk satisfy a requirement?"""
+    settings = get_settings()
+    req_key = (req or "").strip().lower()
+    if not req_key:
+        return False
+
     text = (chunk.chunk_text or "").lower()
     url = (chunk.source_url or "").lower()
     doc_type = (chunk.doc_type or "").lower()
+    combined = f"{text} {url}".strip()
 
-    if req == "transaction_link" or req == "has_any_url":
-        return "http" in url or "http" in text or "www." in text or "order" in text or "store" in text
-    if req == "policy_language":
-        return doc_type in ("policy", "tos") or any(kw in text for kw in ["policy", "terms", "refund", "eligible"])
-    if req == "steps_structure":
-        return any(kw in text for kw in ["step", "1.", "2.", "first", "second", "then"])
-    if req == "numbers_units":
-        return bool(re.search(r"\d+(\s*%|\s*usd|\s*vnd|\s*\$|/mo)", text, re.I))
+    configured_policy_types = {
+        str(t).strip().lower()
+        for t in (settings.reviewer_policy_doc_types or [])
+        if str(t).strip()
+    }
+    if req_key == "policy_language" and configured_policy_types and doc_type in configured_policy_types:
+        return True
+
+    keyword_map = settings.evidence_requirement_keywords or {}
+    for keyword in keyword_map.get(req_key, []):
+        kw = str(keyword).strip().lower()
+        if kw and kw in combined:
+            return True
+
+    regex_map = settings.evidence_requirement_regex_patterns or {}
+    pattern = str(regex_map.get(req_key, "") or "").strip()
+    if pattern:
+        return bool(re.search(pattern, text, re.I))
+
     return False
 
 

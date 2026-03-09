@@ -188,11 +188,6 @@ class AnswerService:
             extra={
                 "required_evidence": required_evidence,
                 "hard_requirements": hard_requirements,
-                "retrieval_profile": (
-                    query_spec.retrieval_profile
-                    if query_spec and getattr(query_spec, "retrieval_profile", None)
-                    else "generic_profile"
-                ),
             },
         )
 

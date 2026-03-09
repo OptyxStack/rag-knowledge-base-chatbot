@@ -6,6 +6,11 @@ Segments answer into claims for claim-to-citation mapping and trim decisions.
 import re
 from dataclasses import dataclass
 
+from app.core.config import get_settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 @dataclass
 class Claim:
@@ -61,16 +66,16 @@ def is_number_claim(claim_text: str) -> bool:
 
 
 def is_policy_claim(claim_text: str) -> bool:
-    """True if claim has policy/refund/terms patterns."""
+    """True if claim matches configured policy-claim patterns."""
     t = claim_text.lower()
-    policy_phrases = [
-        r"according to (?:our |the )?policy",
-        r"(?:we |the company )?(?:shall|must|may not)",
-        r"within \d+ (?:days|hours)",
-        r"(?:eligible|entitled) (?:for|to)",
-        r"refund|reimburse|money back",
-    ]
-    return any(re.search(p, t) for p in policy_phrases)
+    patterns = get_settings().claim_parser_policy_patterns or []
+    for pattern in patterns:
+        try:
+            if re.search(pattern, t):
+                return True
+        except re.error:
+            logger.warning("claim_parser_invalid_policy_pattern", pattern=pattern)
+    return False
 
 
 def trim_unsupported_claims(

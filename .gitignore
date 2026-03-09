@@ -7,6 +7,7 @@
 # Company/proprietary knowledge base - do not commit
 source/*.json
 !source/sample_docs.json
+source/*.sql
 
 .venv/
 venv/

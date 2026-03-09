@@ -42,7 +42,6 @@ _FILE_FORMATS: dict[str, dict[str, Any]] = {
     "pricing.json":                        {"list_key": "pages",    "url_field": "url", "title_field": "title", "text_field": "text"},
     "other.json":                          {"list_key": "pages",    "url_field": "url", "title_field": "title", "text_field": "text"},
     "howto.json":                          {"list_key": "pages",    "url_field": "url", "title_field": "title", "text_field": "text"},
-    "greencloudvps_terms_of_service.json": {"list_key": "pages",    "url_field": "url", "title_field": "title", "text_field": "text"},
     CUSTOM_DOCS_FILE:                      {"list_key": "pages",    "url_field": "url", "title_field": "title", "text_field": "text"},
 }
 

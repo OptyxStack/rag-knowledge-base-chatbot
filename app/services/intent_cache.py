@@ -1,4 +1,4 @@
-"""Intent-based shortcut cache for common queries (who am i, what can you do, etc.).
+"""Intent-based shortcut cache for common queries.
 
 Returns predefined answers without calling LLM/retrieval. Configurable via env.
 """
@@ -20,35 +20,37 @@ class IntentMatch:
     answer: str
 
 
-# GreenCloud VPS - intent cache for common queries
-# https://green.cloud | https://green.cloud/docs
-DEFAULT_INTENTS: dict[str, dict[str, str]] = {
-    "what_can_you_do": {
-        "patterns": r"\b(what (can you|do you|does (this )?ai) do|bạn làm gì|ai làm gì|chức năng)\b",
-        "answer": "I'm GreenCloud's AI support assistant. I can help with questions about our VPS (Windows, Linux KVM, macOS), dedicated servers, pricing, setup guides, and policies. Our docs are at https://green.cloud/docs. What would you like to know?",
-    },
-    "who_are_you": {
-        "patterns": r"\b(who are you|bạn là ai|ai là gì)\b",
-        "answer": "I'm GreenCloud's AI support assistant. GreenCloud is a leading VPS and dedicated server provider (founded 2013), offering Windows VPS, KVM Linux VPS, macOS VPS, and bare-metal servers. I answer questions using our documentation at https://green.cloud/docs.",
-    },
-    "who_am_i": {
-        "patterns": r"\b(who am i|tôi là ai|mình là ai)\b",
-        "answer": "I don't have access to your GreenCloud account details. For billing, account info, or service management, please log in at https://greencloudvps.com/billing or contact our 24/7 support (average response: 9 minutes).",
-    },
-    "about_greencloud": {
-        "patterns": r"\b(what is greencloud|about greencloud|greencloud là gì|giới thiệu greencloud)\b",
-        "answer": "GreenCloud is an Infrastructure as a Service provider founded in 2013. We offer: Windows VPS (from $8/mo), KVM Linux VPS (from $6/mo), macOS VPS (from $22/mo), and dedicated servers (from $110/mo). 99.99% uptime, 24/7 in-house support (9-min avg response), 30 locations across 4 continents. Docs: https://green.cloud/docs",
-    },
-    "hello": {
-        "patterns": r"^(hi|hello|hey|chào|xin chào)\s*!?$",
-        "answer": "Hello! Welcome to GreenCloud support. I can help with VPS, dedicated servers, pricing, or how-to guides. What do you need?",
-    },
-}
+def _default_intents() -> dict[str, dict[str, str]]:
+    app_name = (get_settings().app_name or "").strip()
+    prefix = f"{app_name}'s " if app_name else ""
+    welcome = f"Welcome to {app_name} support. " if app_name else "Welcome. "
+    return {
+        "what_can_you_do": {
+            "patterns": r"\b(what (can you|do you|does (this )?ai) do|bạn làm gì|ai làm gì|chức năng)\b",
+            "answer": f"I'm {prefix}AI support assistant. I can help with questions about products, policies, and setup guides. What would you like to know?",
+        },
+        "who_are_you": {
+            "patterns": r"\b(who are you|bạn là ai|ai là gì)\b",
+            "answer": f"I'm {prefix}AI support assistant. I answer questions using the provided documentation. How can I help?",
+        },
+        "who_am_i": {
+            "patterns": r"\b(who am i|tôi là ai|mình là ai)\b",
+            "answer": "I don't have access to your account details. For billing or account management, please log in to your account or contact support.",
+        },
+        "about": {
+            "patterns": r"\b(what is|about|who are you|giới thiệu)\s+(?:this (?:company|service)|us|your (?:company|service))\b",
+            "answer": f"I'm {prefix}AI support assistant. I help answer questions using our documentation. What would you like to know?",
+        },
+        "hello": {
+            "patterns": r"^(hi|hello|hey|chào|xin chào)\s*!?$",
+            "answer": f"Hello! {welcome}How can I help you today?",
+        },
+    }
 
 
 def _load_intent_responses() -> dict[str, dict[str, str]]:
     """Load intent config from settings or use defaults."""
-    return DEFAULT_INTENTS
+    return _default_intents()
 
 
 def match_intent(query: str) -> IntentMatch | None:
@@ -58,7 +60,7 @@ def match_intent(query: str) -> IntentMatch | None:
         return None
 
     q = query.strip().lower()
-    if len(q) > 200:  # Long queries unlikely to be simple intents
+    if len(q) > 200:
         return None
 
     intents = _load_intent_responses()

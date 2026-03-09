@@ -5,6 +5,7 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.url_fetcher import fetch_content_from_url
 
@@ -145,16 +146,15 @@ def crawl_website(
 
 
 def _doc_type_from_url(url: str) -> str:
-    """Infer doc_type from URL path."""
+    """Infer doc_type from URL path using config-driven keyword mapping."""
     url_lower = url.lower()
-    if "terms" in url_lower or "tos" in url_lower:
-        return "tos"
-    if "privacy" in url_lower or "policy" in url_lower:
-        return "policy"
-    if "faq" in url_lower or "faqs" in url_lower:
-        return "faq"
-    if "docs" in url_lower or "documentation" in url_lower or "help" in url_lower:
-        return "howto"
-    if "vps" in url_lower or "billing" in url_lower or "store" in url_lower or "pricing" in url_lower:
-        return "pricing"
+    mapping = get_settings().doc_type_url_keywords or {}
+    for doc_type, keywords in mapping.items():
+        dt = str(doc_type).strip().lower()
+        if not dt:
+            continue
+        for kw in (keywords or []):
+            token = str(kw).strip().lower()
+            if token and token in url_lower:
+                return dt
     return "other"

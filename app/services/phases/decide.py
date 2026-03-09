@@ -1,31 +1,20 @@
-"""DECIDE phase: decision router."""
+"""DECIDE phase: deterministic decision router."""
 
-from app.services.decision_router import route as decision_route, route_hybrid as decision_route_hybrid
+from app.services.decision_router import route as decision_route
 from app.services.flow_debug import _pipeline_log
 from app.services.orchestrator import OrchestratorContext, PhaseResult
-from app.services.archi_config import get_decision_router_use_llm
 
 
 async def execute_decide(ctx: OrchestratorContext) -> PhaseResult:
     """Run decision router to determine answer lane."""
     required_evidence = ctx.extra.get("required_evidence", [])
-    if get_decision_router_use_llm():
-        dr = await decision_route_hybrid(
-            ctx.query_spec,
-            ctx.quality_report,
-            ctx.evidence,
-            required_evidence,
-            ctx.passes_quality_gate,
-            query=ctx.effective_query,
-        )
-    else:
-        dr = decision_route(
-            ctx.query_spec,
-            ctx.quality_report,
-            ctx.evidence,
-            required_evidence,
-            ctx.passes_quality_gate,
-        )
+    dr = decision_route(
+        ctx.query_spec,
+        ctx.quality_report,
+        ctx.evidence,
+        required_evidence,
+        ctx.passes_quality_gate,
+    )
     _pipeline_log(
         "decide", "done",
         decision=dr.decision,

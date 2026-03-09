@@ -96,7 +96,8 @@ async def build_output(
         except Exception:
             pass
         rr = getattr(ctx, "_last_reviewer_result", None)
-        escalate_answer = ctx.answer
+        forced_handoff = bool(ctx.review_result and ctx.review_result.final_lane == "ESCALATE")
+        escalate_answer = "" if forced_handoff else ctx.answer
         if extra.get("error"):
             escalate_answer = "I'm sorry, I encountered an error. Please try again or contact support."
         elif not escalate_answer:

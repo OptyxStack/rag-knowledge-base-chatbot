@@ -9,7 +9,7 @@ from app.services.schemas import QuerySpec
 def test_build_retrieval_plan_attempt_1():
     """Attempt 1 produces broad_hybrid plan."""
     plan = build_retrieval_plan("vps pricing", 1)
-    assert plan.profile in ("pricing_profile", "generic_profile")
+    assert plan.profile == "generic_profile"
     assert plan.attempt_index == 1
     assert plan.reason == "broad_hybrid"
     assert plan.query_keyword
@@ -69,3 +69,49 @@ def test_build_retrieval_plan_pricing_profile_increases_fetch():
     assert plan.profile == "pricing_profile"
     assert plan.fetch_n >= 50
     assert plan.rerank_k >= 8
+
+
+def test_build_retrieval_plan_uses_doc_type_prior_and_budget_hint():
+    spec = QuerySpec(
+        intent="policy",
+        entities=[],
+        constraints={},
+        required_evidence=["policy_language"],
+        risk_level="high",
+        keyword_queries=["refund policy"],
+        semantic_queries=["refund policy"],
+        clarifying_questions=[],
+        is_ambiguous=False,
+        retrieval_profile="policy_profile",
+        hard_requirements=["policy_language"],
+        doc_type_prior=["policy", "tos"],
+    )
+    plan = build_retrieval_plan("refund policy", 1, query_spec=spec)
+    assert plan.preferred_doc_types is not None
+    assert plan.preferred_doc_types[:2] == ["policy", "tos"]
+    assert plan.budget_hint is not None
+    assert plan.budget_hint.get("boost_pricing") is False
+    assert "policy_language" in (plan.budget_hint.get("hard_requirements") or [])
+    assert "policy" in (plan.budget_hint.get("ensure_doc_types") or [])
+
+
+def test_build_retrieval_plan_does_not_infer_doc_types_when_queryspec_present():
+    spec = QuerySpec(
+        intent="policy",
+        entities=[],
+        constraints={},
+        required_evidence=["policy_language"],
+        risk_level="high",
+        keyword_queries=["refund policy"],
+        semantic_queries=["refund policy"],
+        clarifying_questions=[],
+        is_ambiguous=False,
+        retrieval_profile="policy_profile",
+        hard_requirements=["policy_language"],
+        doc_type_prior=[],
+    )
+
+    plan = build_retrieval_plan("refund policy", 1, query_spec=spec)
+
+    assert plan.preferred_doc_types is None
+    assert plan.profile == "policy_profile"

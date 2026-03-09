@@ -11,6 +11,23 @@ from app.services.schemas import AnswerPlan, DecisionResult, QuerySpec
 
 logger = get_logger(__name__)
 
+# Raw citation patterns leaked by LLM into answer text (chunk_id, source_url) - strip these
+_RAW_CITATION_PATTERN = re.compile(
+    r"\[\s*[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\s*,\s*"
+    r"(?:ticket://[a-f0-9-]+|https?://[^\]]+)\s*\]",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_raw_citations(answer: str) -> str:
+    """Remove raw [chunk_id, source_url] patterns from answer text. Citations belong in the citations array only."""
+    if not answer or not answer.strip():
+        return answer
+    cleaned = _RAW_CITATION_PATTERN.sub("", answer)
+    cleaned = re.sub(r"  +", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
 
 def format_evidence_for_prompt(evidence: list[EvidenceChunk], max_chars_per_chunk: int = 1200) -> str:
     """Format evidence for LLM prompt. Truncates each chunk to stay within context limits."""
@@ -180,7 +197,7 @@ def apply_answer_plan(
 ) -> tuple[str, str, list[str], float]:
     """Apply lane constraints after parsing the LLM response."""
     decision = str(parsed.get("decision", "ASK_USER")).upper()
-    answer = str(parsed.get("answer", ""))
+    answer = _sanitize_raw_citations(str(parsed.get("answer", "")))
     raw_followup = parsed.get("followup_questions", [])
     followup = (
         [str(item) for item in raw_followup if isinstance(item, str)]
@@ -227,66 +244,9 @@ def collect_rewrite_candidates(
     base_query: str,
     query_spec: QuerySpec | None,
 ) -> list[str]:
-    """Collect deduplicated retrieval rewrite candidates for retries."""
-    candidates = [base_query.strip()]
-    if query_spec and getattr(query_spec, "rewrite_candidates", None):
-        candidates.extend(
-            str(candidate).strip()
-            for candidate in query_spec.rewrite_candidates
-            if isinstance(candidate, str) and candidate.strip()
-        )
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = candidate.lower()
-        if key not in seen:
-            seen.add(key)
-            deduped.append(candidate)
-    return deduped
-
-
-def _pick_intent_aligned_rewrite(
-    base_query: str,
-    rewrite_candidates: list[str],
-    attempt: int,
-    retry_strategy: Any | None,
-    query_spec: QuerySpec | None,
-) -> tuple[str | None, str]:
-    """Pick rewrite that aligns with retry intent to avoid semantic drift.
-
-    E.g. for missing_policy + filter_doc_types [policy,tos], prefer
-    'refund policy' over 'order cancellation' (which can match order links).
-    """
-    if attempt <= 1 or not retry_strategy or not rewrite_candidates:
-        return None, ""
-
-    filter_doc_types = getattr(retry_strategy, "filter_doc_types", None) or []
-    hard = set(getattr(query_spec, "hard_requirements", None) or []) if query_spec else set()
-    reqs = set(getattr(query_spec, "required_evidence", None) or []) if query_spec else set()
-    needs_policy = "policy_language" in hard or "policy_language" in reqs
-    base_lower = base_query.lower().strip()
-
-    # Policy/tos retry: prefer policy-focused phrases
-    if set(filter_doc_types) & {"policy", "tos"} or needs_policy:
-        policy_terms = ("policy", "terms", "refund", "cancellation policy", "terms of service")
-        drift_terms = ("order", "buy", "checkout")  # can match transaction pages
-        for c in rewrite_candidates[1:]:  # skip base
-            c_lower = c.lower().strip()
-            if not c_lower or c_lower == base_lower:
-                continue
-            if any(p in c_lower for p in policy_terms) and not any(d in c_lower for d in drift_terms):
-                return c.strip(), "intent_aligned_rewrite"
-    # Steps/howto retry: prefer step-focused phrases
-    boost = getattr(retry_strategy, "boost_patterns", None) or []
-    if any(b in ("step", "1.", "2.", "first", "second") for b in boost):
-        step_terms = ("step", "how to", "guide", "setup", "install")
-        for c in rewrite_candidates[1:]:
-            c_lower = c.lower().strip()
-            if c_lower and c_lower != base_lower and any(s in c_lower for s in step_terms):
-                return c.strip(), "intent_aligned_rewrite"
-
-    return None, ""
+    """Compatibility wrapper. Canonical implementation lives in retrieval_planner."""
+    from app.services.retrieval_planner import collect_rewrite_candidates as _collect
+    return _collect(base_query, query_spec)
 
 
 def resolve_retrieval_query(
@@ -297,34 +257,12 @@ def resolve_retrieval_query(
     retry_strategy: Any | None,
     explicit_override: str | None = None,
 ) -> tuple[str, str, list[str]]:
-    """Resolve the retrieval query for the current attempt.
-
-    This keeps the user-facing effective query stable while allowing retrieval
-    retries to use structured rewrite candidates or explicit overrides.
-    Intent-aligned selection avoids semantic drift (e.g. 'order cancellation'
-    matching order links instead of policy).
-    """
-    rewrite_candidates = collect_rewrite_candidates(base_query, query_spec)
-
-    if retry_strategy and getattr(retry_strategy, "suggested_query", None):
-        suggested = str(retry_strategy.suggested_query).strip()
-        if suggested:
-            return suggested, "retry_strategy_suggested_query", rewrite_candidates
-
-    if explicit_override and explicit_override.strip():
-        return explicit_override.strip(), "explicit_retry_query", rewrite_candidates
-
-    if attempt > 1 and len(rewrite_candidates) > 1:
-        # Prefer intent-aligned rewrite to avoid semantic drift
-        picked, reason = _pick_intent_aligned_rewrite(
-            base_query, rewrite_candidates, attempt, retry_strategy, query_spec
-        )
-        if picked:
-            return picked, reason, rewrite_candidates
-
-        idx = min(attempt - 1, len(rewrite_candidates) - 1)
-        candidate = rewrite_candidates[idx].strip()
-        if candidate:
-            return candidate, f"rewrite_candidate_{idx}", rewrite_candidates
-
-    return base_query.strip(), "base_query", rewrite_candidates
+    """Compatibility wrapper. Canonical implementation lives in retrieval_planner."""
+    from app.services.retrieval_planner import resolve_retrieval_query as _resolve
+    return _resolve(
+        base_query=base_query,
+        attempt=attempt,
+        query_spec=query_spec,
+        retry_strategy=retry_strategy,
+        explicit_override=explicit_override,
+    )

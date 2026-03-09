@@ -6,8 +6,8 @@ from app.services.evidence_hygiene import compute_hygiene
 from app.services.flow_debug import _pipeline_log
 from app.services.evidence_evaluator import evaluate_evidence
 from app.services.retry_planner import plan_retry
+from app.services.retrieval_planner import build_retrieval_plan_for_attempt
 from app.services.orchestrator import OrchestratorContext, PhaseResult
-from app.services.answer_utils import resolve_retrieval_query
 from app.services.archi_config import get_evidence_evaluator_enabled
 
 
@@ -21,8 +21,6 @@ async def execute_retrieve(
     """Run retrieval for current attempt."""
     attempt = ctx.retrieval_attempt + 1
     _pipeline_log("retrieve", "start", attempt=attempt, query=ctx.effective_query[:80], trace_id=ctx.trace_id)
-    required_evidence = ctx.extra.get("required_evidence", [])
-    retrieval_profile = ctx.extra.get("retrieval_profile", "generic_profile")
 
     retry_strategy = None
     if attempt == 2 and ctx.quality_report:
@@ -34,19 +32,21 @@ async def execute_retrieve(
             query_spec=ctx.query_spec,
         )
 
-    retrieval_query, _, rewrite_candidates = resolve_retrieval_query(
+    retrieval_plan, planning_debug = await build_retrieval_plan_for_attempt(
         base_query=ctx.effective_query,
         attempt=attempt,
         query_spec=ctx.query_spec,
         retry_strategy=retry_strategy,
         explicit_override=ctx.retry_query_override,
+        conversation_history=ctx.conversation_history,
     )
     ctx.retry_query_override = None
 
     retry_strategy_applied: dict[str, Any] = {
-        "retrieval_profile": retrieval_profile,
-        "selected_retrieval_query": retrieval_query,
-        "rewrite_candidates": rewrite_candidates[:3],
+        "retrieval_profile": retrieval_plan.profile,
+        "selected_retrieval_query": planning_debug.get("selected_retrieval_query", ctx.effective_query),
+        "rewrite_candidates": planning_debug.get("rewrite_candidates", []),
+        "query_source": planning_debug.get("query_source"),
     }
     if retry_strategy:
         retry_strategy_applied.update({
@@ -57,11 +57,12 @@ async def execute_retrieve(
     ctx.extra["retry_strategy_applied"] = retry_strategy_applied
 
     evidence_pack = await retrieval.retrieve(
-        retrieval_query,
+        ctx.effective_query,
         conversation_history=ctx.conversation_history,
         retry_strategy=retry_strategy,
         attempt=attempt,
         query_spec=ctx.query_spec,
+        retrieval_plan=retrieval_plan,
     )
     evidence = evidence_pack.chunks
 

@@ -1,19 +1,18 @@
-"""GENERATE phase: filter chunks → LLM + self-critic."""
+"""GENERATE phase: LLM generation + optional self-critic."""
 
 from app.core.logging import get_logger
-from app.services.branding_config import get_system_prompt
-from app.services.chunk_filter import filter_chunks_for_query
 from app.services.answer_utils import (
+    apply_answer_plan,
     build_answer_plan,
     format_answer_plan_instruction,
     format_evidence_for_prompt,
     parse_llm_response,
-    apply_answer_plan,
 )
-from app.services.self_critic import critique as self_critic
-from app.services.orchestrator import OrchestratorContext, PhaseResult
 from app.services.archi_config import get_self_critic_enabled
+from app.services.branding_config import get_system_prompt
 from app.services.flow_debug import _pipeline_log
+from app.services.orchestrator import OrchestratorContext, PhaseResult
+from app.services.self_critic import critique as self_critic
 
 logger = get_logger(__name__)
 
@@ -25,11 +24,8 @@ async def execute_generate(
     orchestrator,
     settings,
 ) -> PhaseResult:
-    """Run chunk filter → LLM generation with self-critic."""
+    """Generate an answer from evidence selected by retrieval/evidence selector."""
     evidence = ctx.evidence
-    if evidence:
-        evidence = await filter_chunks_for_query(ctx.effective_query or ctx.query, evidence)
-        ctx.evidence = evidence
 
     answer_plan = build_answer_plan(
         ctx.decision_result,
@@ -46,8 +42,8 @@ async def execute_generate(
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     if ctx.conversation_history:
-        for m in ctx.conversation_history[-4:]:
-            messages.append({"role": m["role"], "content": m["content"]})
+        for msg in ctx.conversation_history[-4:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
     messages.append({"role": "user", "content": user_content})
     ctx.extra["messages"] = messages
 
@@ -55,6 +51,7 @@ async def execute_generate(
     _pipeline_log("generate", "start", model=model, evidence_chunks=len(ctx.evidence), trace_id=ctx.trace_id)
     try:
         from app.core.tracing import current_llm_task_var
+
         current_llm_task_var.set("generate")
         llm_resp = await llm.chat(
             messages=messages,
@@ -87,11 +84,16 @@ async def execute_generate(
             if critique_result and not critique_result.pass_:
                 try:
                     from app.core.metrics import self_critic_regenerate_total
+
                     self_critic_regenerate_total.inc()
                 except Exception:
                     pass
                 logger.info("self_critic_fail", issues=critique_result.issues[:3])
-                feedback = f"\n\nPrevious attempt had issues: {', '.join(critique_result.issues[:2])}. Fix: {critique_result.suggested_fix}"
+                feedback = (
+                    "\n\nPrevious attempt had issues: "
+                    f"{', '.join(critique_result.issues[:2])}. "
+                    f"Fix: {critique_result.suggested_fix}"
+                )
                 messages[-1]["content"] = messages[-1]["content"] + feedback
                 try:
                     current_llm_task_var.set("generate_regenerate")
@@ -112,7 +114,14 @@ async def execute_generate(
         break
     ctx.extra["self_critic_regenerated"] = self_critic_regenerated
 
-    _pipeline_log("generate", "done", confidence=confidence, self_critic_regenerated=self_critic_regenerated, trace_id=ctx.trace_id)
+    _pipeline_log(
+        "generate",
+        "done",
+        confidence=confidence,
+        self_critic_regenerated=self_critic_regenerated,
+        trace_id=ctx.trace_id,
+    )
+    ctx.extra["generated_decision"] = decision
 
     return PhaseResult(
         answer=answer,
@@ -120,4 +129,5 @@ async def execute_generate(
         followup=followup,
         confidence=confidence,
         answer_plan=answer_plan,
+        generated_decision=decision,
     )

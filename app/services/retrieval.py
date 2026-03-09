@@ -14,7 +14,7 @@ from app.search.qdrant_client import QdrantSearchClient
 from app.search.reranker import RerankerProvider, get_reranker_provider
 
 from app.services.evidence_set_builder import build_evidence_set
-from app.services.retrieval_planner import build_retrieval_plan
+from app.services.retrieval_planner import build_retrieval_plan_for_attempt
 from app.services.retry_planner import RetryStrategy
 from app.services.schemas import CandidateChunk, CandidatePool, EvidenceSet, QuerySpec, RetrievalPlan
 
@@ -57,229 +57,28 @@ class RetrievalService:
         self._embedder = embedding_provider or get_embedding_provider()
         self._reranker = reranker or get_reranker_provider()
 
-    def _rewrite_with_conversation(
-        self, query: str, conversation_history: list[dict[str, str]] | None
-    ) -> str:
-        """Rewrite query using conversation context for better retrieval."""
-        if not conversation_history or len(conversation_history) < 2:
-            return query
-
-        _STOPWORDS = {"hello", "hi", "hey", "thanks", "thank", "ok", "okay"}
-        context_terms: list[str] = []
-        for m in conversation_history[-4:]:
-            content = (m.get("content") or "").strip()
-            if not content or len(content) > 200:
-                continue
-            if m.get("role") == "user":
-                words = [
-                    w for w in content.split()
-                    if len(w) > 2 and w.lower() not in _STOPWORDS
-                ][:5]
-                context_terms.extend(words)
-        if context_terms:
-            # Dedupe and combine with current query
-            seen = set()
-            unique = []
-            for t in context_terms:
-                tl = t.lower()
-                if tl not in seen and tl not in query.lower():
-                    seen.add(tl)
-                    unique.append(t)
-            if unique:
-                return f"{' '.join(unique)} {query}".strip()
-        return query
-
-    def _resolve_retrieval_profile(
-        self,
-        query: str,
-        query_spec: QuerySpec | None,
-    ) -> str:
-        """Resolve the active retrieval profile.
-
-        QuerySpec is the preferred source of truth. Fallback heuristics exist only
-        for backward compatibility when QuerySpec is absent or minimal.
-        """
-        if query_spec and getattr(query_spec, "retrieval_profile", None):
-            return query_spec.retrieval_profile
-
-        q = query.lower()
-        if any(kw in q for kw in ["price", "cost", "pricing", "order", "buy", "subscribe", "link"]):
-            return "pricing_profile"
-        if any(kw in q for kw in ["refund", "policy", "terms", "cancellation"]):
-            return "policy_profile"
-        if any(kw in q for kw in ["how", "setup", "install", "fix", "error", "step"]):
-            return "troubleshooting_profile"
-        if any(kw in q for kw in ["compare", "diff", "difference", "vs", "versus"]):
-            return "comparison_profile"
-        if any(kw in q for kw in ["account", "login", "billing"]):
-            return "account_profile"
-        return "generic_profile"
-
-    def _resolve_hard_requirements(self, query_spec: QuerySpec | None) -> set[str]:
-        """Return hard requirements, with required_evidence as compatibility fallback."""
-        if not query_spec:
-            return set()
-        hard = getattr(query_spec, "hard_requirements", None) or query_spec.required_evidence or []
-        return {str(x) for x in hard if isinstance(x, str)}
-
-    def _is_pricing_retrieval(
-        self,
-        query: str,
-        profile: str,
-        query_spec: QuerySpec | None,
-        hard_requirements: set[str],
-    ) -> bool:
-        """Decide whether pricing-oriented retrieval heuristics should apply."""
-        q_lower = query.lower()
-        if profile == "pricing_profile":
-            return True
-        if profile == "comparison_profile" and any(
-            kw in q_lower for kw in ["price", "pricing", "cost", "plan", "offer", "link"]
-        ):
-            return True
-        if hard_requirements & {"transaction_link"}:
-            return True
-        # Backward compatibility: keep the old broad heuristic only when QuerySpec
-        # is absent, so newer QuerySpec-driven requests are less noisy.
-        legacy_keywords = ["plan", "plans", "price", "pricing", "vps", "offer", "link"]
-        if query_spec is not None:
-            legacy_keywords = ["plan", "plans", "price", "pricing", "offer", "cost", "link"]
-        return any(kw in q_lower for kw in legacy_keywords)
-
-    def _derive_ensure_doc_types(
-        self,
-        profile: str,
-        query_spec: QuerySpec | None,
-        is_pricing_retrieval: bool,
-    ) -> list[str]:
-        """Derive doc types that should be explicitly represented in the final evidence."""
-        ensure_doc_types: list[str] = []
-        hard_requirements = self._resolve_hard_requirements(query_spec)
-        soft_requirements = {
-            str(x)
-            for x in (getattr(query_spec, "soft_requirements", None) or [])
-            if isinstance(x, str)
-        }
-
-        if is_pricing_retrieval and self._settings.retrieval_plans_fetch_doc_types:
-            ensure_doc_types.extend(
-                t.strip()
-                for t in self._settings.retrieval_plans_fetch_doc_types.split(",")
-                if t.strip()
-            )
-
-        if profile == "policy_profile" or "policy_language" in hard_requirements:
-            policy_types = [
-                t.strip()
-                for t in (self._settings.retrieval_policy_doc_types or "").split(",")
-                if t.strip()
-            ]
-            if policy_types:
-                ensure_doc_types.extend(policy_types)
-                ensure_doc_types.append("pricing")  # product-specific policy disclaimers
-
-        if profile == "troubleshooting_profile" or "steps_structure" in hard_requirements:
-            ensure_doc_types.extend(["howto", "docs", "faq"])
-
-        if "has_any_url" in hard_requirements or "has_any_url" in soft_requirements:
-            ensure_doc_types.append("faq")
-
-        return list(dict.fromkeys(ensure_doc_types))
-
-    async def _query_rewrite(
-        self,
-        query: str,
-        conversation_history: list[dict[str, str]] | None = None,
-        retry_strategy: RetryStrategy | None = None,
-        query_spec: QuerySpec | None = None,
-    ) -> QueryRewrite:
-        """Rewrite query: use QuerySpec when available, else LLM rewriter or heuristic."""
-        if query_spec:
-            keyword_query = query_spec.keyword_queries[0] if query_spec.keyword_queries else ""
-            semantic_query = query_spec.semantic_queries[0] if query_spec.semantic_queries else ""
-
-            if not keyword_query and getattr(query_spec, "rewrite_candidates", None):
-                keyword_query = query_spec.rewrite_candidates[0]
-            if not semantic_query and getattr(query_spec, "rewrite_candidates", None):
-                semantic_query = query_spec.rewrite_candidates[0]
-
-            if retry_strategy and not retry_strategy.suggested_query and query_spec.rewrite_candidates:
-                alternate = next(
-                    (
-                        candidate
-                        for candidate in query_spec.rewrite_candidates
-                        if candidate.strip()
-                        and candidate.strip().lower() != semantic_query.strip().lower()
-                    ),
-                    None,
-                )
-                if alternate:
-                    semantic_query = alternate
-                    if keyword_query:
-                        keyword_query = f"{keyword_query} {alternate}".strip()
-                    else:
-                        keyword_query = alternate
-
-            if semantic_query:
-                # Retry attempt 2: append boost patterns from Retry Planner
-                if retry_strategy and retry_strategy.boost_patterns:
-                    boost = " ".join(p for p in retry_strategy.boost_patterns if not p.startswith("\\"))
-                    if boost:
-                        keyword_query = f"{keyword_query or semantic_query} {boost}".strip()
-                if not keyword_query:
-                    keyword_query = semantic_query
-                return QueryRewrite(
-                    keyword_query=keyword_query,
-                    semantic_query=semantic_query,
-                )
-        # Fallback: LLM rewriter or rule-based heuristic
-        if self._settings.query_rewriter_use_llm:
-            from app.services.query_rewriter import rewrite_for_retrieval
-            retry_boost = ""
-            if retry_strategy and retry_strategy.boost_patterns:
-                retry_boost = " ".join(
-                    p for p in retry_strategy.boost_patterns if not p.startswith("\\")
-                )[:100]
-            result = await rewrite_for_retrieval(
-                query, conversation_history, retry_boost or None
-            )
-            return QueryRewrite(
-                keyword_query=result.keyword_query,
-                semantic_query=result.semantic_query,
-                retrieval_profile=result.retrieval_profile,
-            )
-        # Rule-based heuristic (when query_rewriter_use_llm=False)
-        semantic_query = self._rewrite_with_conversation(query, conversation_history)
-        q = semantic_query.lower()
-        keyword_query = semantic_query
-        if any(kw in q for kw in ["plan", "plans", "price", "pricing", "vps", "offer", "cost", "link"]):
-            extras = []
-            if "plan" in q or "plans" in q or "link" in q:
-                extras.extend(["pricing", "budget", "windows vps", "kvm vps", "storage", "order", "store"])
-            if "price" in q or "cost" in q:
-                extras.extend(["USD", "monthly", "annually", "pricing"])
-            if "refund" in q or "return" in q:
-                extras.extend(["policy", "terms", "30 days"])
-            if "support" in q or "help" in q:
-                extras.extend(["contact", "email", "FAQ"])
-            if extras:
-                keyword_query = f"{semantic_query} {' '.join(extras[:4])}"
-        if retry_strategy and retry_strategy.boost_patterns:
-            boost = " ".join(p for p in retry_strategy.boost_patterns if not p.startswith("\\"))
-            if boost:
-                keyword_query = f"{keyword_query} {boost}"
-        return QueryRewrite(keyword_query=keyword_query, semantic_query=semantic_query)
-
     def _merge_simple(
         self,
         bm25_chunks: list[SearchChunk],
         vector_chunks: list[SearchChunk],
     ) -> list[SearchChunk]:
-        """Merge and dedupe by chunk_id. Prefer higher score when duplicate."""
+        """Merge and dedupe by chunk_id. Prefer higher score when duplicate. Boost conversation chunks."""
         seen: dict[str, SearchChunk] = {}
+        conv_boost = 1.5
         for c in bm25_chunks + vector_chunks:
-            if c.chunk_id not in seen or c.score > seen[c.chunk_id].score:
-                seen[c.chunk_id] = c
+            score = c.score or 0.0
+            if (c.doc_type or "").lower() == "conversation":
+                score *= conv_boost
+            if c.chunk_id not in seen or score > (seen[c.chunk_id].score or 0):
+                seen[c.chunk_id] = SearchChunk(
+                    chunk_id=c.chunk_id,
+                    document_id=c.document_id,
+                    chunk_text=c.chunk_text,
+                    source_url=c.source_url,
+                    doc_type=c.doc_type,
+                    score=score,
+                    metadata=c.metadata,
+                )
         return list(seen.values())
 
     def _merge_with_rrf(
@@ -301,6 +100,12 @@ class RetrievalService:
         for rank, c in enumerate(vector_chunks, start=1):
             rrf_scores[c.chunk_id] = rrf_scores.get(c.chunk_id, 0.0) + 1.0 / (k + rank)
             chunk_by_id[c.chunk_id] = c
+
+        # Boost conversation chunks (sample tickets) so they rank higher
+        conv_boost = 1.5
+        for cid, c in chunk_by_id.items():
+            if (c.doc_type or "").lower() == "conversation":
+                rrf_scores[cid] = rrf_scores.get(cid, 0.0) * conv_boost
 
         # Sort by RRF score descending, return chunks with updated score for downstream
         sorted_ids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
@@ -380,19 +185,29 @@ class RetrievalService:
             retry_strategy.suggested_query if retry_strategy and retry_strategy.suggested_query else query
         )
         effective_query_spec = None if (retry_strategy and retry_strategy.suggested_query) else query_spec
+        requested_doc_types = doc_types
 
-        # Semantic doc type selection: LLM picks which doc types to search
-        if doc_types is None:
-            from app.services.archi_config import get_retrieval_doc_type_use_llm
-            from app.services.doc_type_router import select_doc_types_for_query
-            if get_retrieval_doc_type_use_llm():
-                doc_types = await select_doc_types_for_query(effective_query)
-
-        plan = retrieval_plan or build_retrieval_plan(
-            effective_query, attempt, effective_query_spec, retry_strategy
-        )
-        qr = await self._query_rewrite(
-            effective_query, conversation_history, retry_strategy, effective_query_spec
+        planning_debug: dict[str, Any] = {}
+        if retrieval_plan is None:
+            plan, planning_debug = await build_retrieval_plan_for_attempt(
+                base_query=effective_query,
+                attempt=attempt,
+                query_spec=effective_query_spec,
+                retry_strategy=retry_strategy,
+                explicit_override=None,
+                conversation_history=conversation_history,
+            )
+        else:
+            plan = retrieval_plan
+            planning_debug = {
+                "selected_retrieval_query": plan.query_semantic or plan.query_keyword,
+                "query_source": "provided_plan",
+                "rewrite_candidates": list(plan.fallback_queries or []),
+            }
+        qr = QueryRewrite(
+            keyword_query=plan.query_keyword or effective_query,
+            semantic_query=plan.query_semantic or effective_query,
+            retrieval_profile=plan.profile,
         )
         try:
             from app.services.flow_debug import _pipeline_log
@@ -405,40 +220,33 @@ class RetrievalService:
             )
         except Exception:
             pass
-        # Only override with plan when QuerySpec exists (plan has query_spec values).
-        # When no QuerySpec, plan has raw query; keep our LLM/heuristic rewrite.
-        if plan.query_keyword and effective_query_spec:
-            qr = QueryRewrite(
-                keyword_query=plan.query_keyword,
-                semantic_query=plan.query_semantic or qr.semantic_query,
-                retrieval_profile=qr.retrieval_profile,
-            )
-
-        # Use retrieval_profile from LLM rewriter when no QuerySpec (overrides plan heuristic)
-        profile = (
-            qr.retrieval_profile
-            if (qr.retrieval_profile and not effective_query_spec)
-            else plan.profile
-        )
-        effective_doc_types = doc_types or plan.preferred_doc_types
+        # Retrieval plan is authoritative for profile/doc type strategy.
+        profile = plan.profile
+        effective_doc_types = requested_doc_types or plan.preferred_doc_types
         if retry_strategy and retry_strategy.filter_doc_types:
             effective_doc_types = retry_strategy.filter_doc_types
 
         fetch_n = plan.fetch_n or top_n or self._settings.retrieval_top_n
         rerank_k = plan.rerank_k or top_k or self._settings.retrieval_top_k
-        hard_requirements = self._resolve_hard_requirements(effective_query_spec)
-        is_pricing_retrieval = self._is_pricing_retrieval(
-            effective_query, profile, effective_query_spec, hard_requirements
-        )
-        ensure_doc_types = self._derive_ensure_doc_types(
-            profile, effective_query_spec, is_pricing_retrieval
-        )
+        plan_hint = dict(getattr(plan, "budget_hint", None) or {})
+        hard_requirements = {
+            str(x)
+            for x in (plan_hint.get("hard_requirements") or [])
+            if isinstance(x, str)
+        }
+        is_pricing_retrieval = bool(plan_hint.get("boost_pricing", False))
+        ensure_doc_types = [
+            str(x).strip()
+            for x in (plan_hint.get("ensure_doc_types") or [])
+            if str(x).strip()
+        ]
 
         bm25_chunks = await self._opensearch.search(
             query=qr.keyword_query,
             top_n=fetch_n,
             doc_types=effective_doc_types,
             boost_pricing=is_pricing_retrieval or bool(retry_strategy and retry_strategy.boost_patterns),
+            prefer_snippet=False,
         )
         bm25_ids = {c.chunk_id for c in bm25_chunks}
 
@@ -449,6 +257,7 @@ class RetrievalService:
                 top_n=20,
                 doc_types=ensure_doc_types,
                 boost_pricing=True,
+                prefer_snippet=False,
             )
         extra_ids = {c.chunk_id for c in extra_bm25}
 
@@ -496,6 +305,8 @@ class RetrievalService:
             "query_rewrite": {"keyword_query": qr.keyword_query, "semantic_query": qr.semantic_query},
             "attempt": attempt,
             "plan_reason": plan.reason,
+            "plan_budget_hint": plan_hint,
+            "query_source": planning_debug.get("query_source"),
         }
         if hard_requirements:
             stats["hard_requirements"] = sorted(hard_requirements)
@@ -528,14 +339,7 @@ class RetrievalService:
                 evidence_set=None,
             )
 
-        extra = 0
-        if is_pricing_retrieval:
-            extra = max(extra, self._settings.retrieval_plans_extra_chunks)
-        if profile == "policy_profile" or "policy_language" in hard_requirements:
-            extra = max(extra, 2)
-        if profile == "troubleshooting_profile" or "steps_structure" in hard_requirements:
-            extra = max(extra, 2)
-        rerank_k = min(rerank_k + extra, len(merged))
+        rerank_k = min(rerank_k, len(merged))
         reranked = await self._reranker.rerank(effective_query, merged, rerank_k)
 
         candidate_pool = self._build_candidate_pool(

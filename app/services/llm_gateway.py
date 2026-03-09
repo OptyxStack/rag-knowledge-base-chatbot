@@ -73,18 +73,18 @@ class OpenAIGateway(LLMGateway):
         model = kwargs.pop("model", None) or get_llm_model()
         models_to_try = [model, get_llm_fallback_model()]
         max_tokens = kwargs.pop("max_tokens", None) or self._settings.llm_max_tokens
-        timeout = kwargs.get("timeout") or self._settings.llm_timeout_seconds
 
         # Cache lookup (Redis)
-        cache_key = _cache_key(messages, model, temperature)
-        cached = await self._get_cached(cache_key)
+        request_cache_key = _cache_key(messages, model, temperature)
+        cached = await self._get_cached(request_cache_key)
         if cached:
+            logger.debug("llm_cache_hit", model=model, cache_key=request_cache_key[:12])
             return cached
 
         # OpenAI prompt caching: improves cache hit rates for similar prompts
         extra_params: dict[str, Any] = {k: v for k, v in kwargs.items() if k not in ("model", "timeout")}
-        cache_key = self._settings.llm_prompt_cache_key or f"support_ai:{self._settings.app_name}"
-        extra_params["prompt_cache_key"] = cache_key
+        prompt_cache_key = self._settings.llm_prompt_cache_key or f"support_ai:{self._settings.app_name}"
+        extra_params["prompt_cache_key"] = prompt_cache_key
         if self._settings.llm_prompt_cache_retention in ("24h", "in_memory"):
             extra_params["prompt_cache_retention"] = self._settings.llm_prompt_cache_retention
 
@@ -120,7 +120,8 @@ class OpenAIGateway(LLMGateway):
                     finish_reason=choice.finish_reason,
                     raw={"id": response.id, "model": response.model},
                 )
-                await self._set_cached(cache_key, result)
+                await self._set_cached(request_cache_key, result)
+                logger.debug("llm_cache_store", model=response.model, cache_key=request_cache_key[:12])
                 # Metrics
                 try:
                     from app.core.metrics import (

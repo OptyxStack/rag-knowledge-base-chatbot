@@ -69,8 +69,8 @@ def test_reviewer_high_risk_requires_policy(mock_evidence_chunks):
     assert "policy" in result.reasons[0].lower()
 
 
-def test_reviewer_retrieve_more_max_attempts(mock_evidence_chunks):
-    """RETRIEVE_MORE at max attempts should become ASK_USER."""
+def test_reviewer_legacy_retrieve_more_input_becomes_ask_user(mock_evidence_chunks):
+    """Legacy RETRIEVE_MORE input should now default to ASK_USER."""
     gate = ReviewerGate()
     result = gate.review(
         decision="RETRIEVE_MORE",
@@ -83,7 +83,7 @@ def test_reviewer_retrieve_more_max_attempts(mock_evidence_chunks):
         max_attempts=2,
     )
     assert result.status == ReviewerStatus.ASK_USER
-    assert "Max retrieval attempts" in result.reasons[0]
+    assert "defaulting to ASK_USER" in result.reasons[0]
 
 
 def test_reviewer_allows_bounded_pass_weak_with_single_citation(mock_evidence_chunks):

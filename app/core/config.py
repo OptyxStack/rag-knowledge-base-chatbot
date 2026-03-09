@@ -113,6 +113,21 @@ class Settings(BaseSettings):
         default=True,
         description="Workstream 3: Build EvidenceSet from CandidatePool. Disable for legacy top-k only.",
     )
+    evidence_requirement_keywords: dict[str, list[str]] = Field(
+        default={
+            "transaction_link": ["http", "www.", "order", "store"],
+            "has_any_url": ["http", "www.", "order", "store"],
+            "policy_language": ["policy", "terms", "refund", "eligible"],
+            "steps_structure": ["step", "1.", "2.", "first", "second", "then"],
+        },
+        description="Fallback keyword hints for requirement->chunk matching in EvidenceSet builder when LLM coverage_map is absent.",
+    )
+    evidence_requirement_regex_patterns: dict[str, str] = Field(
+        default={
+            "numbers_units": r"\d+(\s*%|\s*usd|\s*vnd|\s*\$|/mo)",
+        },
+        description="Fallback regex hints for requirement->chunk matching in EvidenceSet builder when LLM coverage_map is absent.",
+    )
 
     # Evidence Quality Gate (Phase 1)
     evidence_quality_enabled: bool = Field(default=True, description="Enable evidence quality gate before LLM")
@@ -133,6 +148,57 @@ class Settings(BaseSettings):
     # Chunking
     chunk_min_tokens: int = Field(default=300, ge=100, le=1000)
     chunk_max_tokens: int = Field(default=700, ge=200, le=1500)
+    chunk_semantic_min_tokens: int = Field(
+        default=120,
+        ge=40,
+        le=800,
+        description="Target minimum tokens for semantic retrieval chunks.",
+    )
+    chunk_semantic_max_tokens: int = Field(
+        default=260,
+        ge=60,
+        le=1000,
+        description="Target maximum tokens for semantic retrieval chunks.",
+    )
+    chunk_parent_refs_enabled: bool = Field(
+        default=True,
+        description="Attach parent section references in chunk metadata for optional parent expansion.",
+    )
+
+    # Reviewer / claim parser policy patterns
+    reviewer_high_risk_patterns: list[str] = Field(
+        default=[
+            r"\b(refund|reimburse|money back)\b",
+            r"\b(billing|invoice|payment dispute)\b",
+            r"\b(legal|lawsuit|attorney)\b",
+            r"\b(abuse|fraud|violation)\b",
+            r"\b(cancel.*subscription|terminate)\b",
+        ],
+        description="Regex patterns for high-risk query detection in reviewer gate.",
+    )
+    reviewer_policy_doc_types: list[str] = Field(
+        default=["policy", "tos"],
+        description="Doc types accepted as policy citations in reviewer gate.",
+    )
+    reviewer_policy_claim_patterns: list[str] = Field(
+        default=[
+            r"according to (?:our |the )?policy",
+            r"(?:we |the company )?(?:shall|must|may not)",
+            r"within \d+ (?:days|hours)",
+            r"(?:eligible|entitled) (?:for|to)",
+        ],
+        description="Regex patterns for policy-like claims requiring citation in reviewer gate.",
+    )
+    claim_parser_policy_patterns: list[str] = Field(
+        default=[
+            r"according to (?:our |the )?policy",
+            r"(?:we |the company )?(?:shall|must|may not)",
+            r"within \d+ (?:days|hours)",
+            r"(?:eligible|entitled) (?:for|to)",
+            r"refund|reimburse|money back",
+        ],
+        description="Regex patterns to classify policy claims in claim parser.",
+    )
 
     # Doc type classifier (crawl/ingestion)
     doc_type_classifier_enabled: bool = Field(
@@ -142,6 +208,16 @@ class Settings(BaseSettings):
     retrieval_doc_type_use_llm: bool = Field(
         default=False,
         description="Use LLM to select doc types for retrieval (semantic routing). When disabled, uses keyword heuristics.",
+    )
+    doc_type_url_keywords: dict[str, list[str]] = Field(
+        default={
+            "tos": ["terms", "tos"],
+            "policy": ["privacy", "policy"],
+            "faq": ["faq", "faqs"],
+            "howto": ["docs", "documentation", "help"],
+            "pricing": ["vps", "billing", "store", "pricing"],
+        },
+        description="URL keyword mapping for fallback doc_type inference (doc_type -> keyword list).",
     )
 
     # Rate limiting
@@ -163,6 +239,35 @@ class Settings(BaseSettings):
     # PII redaction
     pii_redact_emails: bool = Field(default=True)
     pii_redact_phones: bool = Field(default=True)
+
+    # Evidence hygiene patterns (logging signals only)
+    hygiene_boilerplate_patterns: list[str] = Field(
+        default=[
+            r"\bcontact\s+(?:us|support)\b",
+            r"\bcopyright\s+(?:\u00A9)?\s*\d{4}",
+            r"\b(?:privacy|terms)\s+(?:of\s+)?(?:service|policy)\b",
+            r"\bmenu\b",
+            r"\ball\s+rights\s+reserved\b",
+            r"\bsign\s+(?:in|up)\b",
+            r"\blogin\b",
+            r"\bcart\b",
+            r"\bcheckout\b",
+            r"\bnav(?:igation)?\b",
+            r"\bfooter\b",
+            r"\bcookie\s+policy\b",
+        ],
+        description="Regex patterns for boilerplate detection in evidence hygiene telemetry.",
+    )
+    hygiene_transaction_path_patterns: list[str] = Field(
+        default=[
+            r"/(?:order|store|checkout|cart|buy|purchase|subscribe|billing)/?",
+            r"/(?:dedicated-servers|proxies|semi-dedicated|vps)/?",
+            r"(?:dedicated-servers|proxies|semi-dedicated|-vps|vps|billing)\.(?:php|html?)",
+            r"order_link",
+            r"order\s*link",
+        ],
+        description="Regex patterns used to detect transactional URLs/paths in evidence hygiene telemetry.",
+    )
 
     # Gateway
     max_request_body_bytes: int = Field(default=1_000_000, description="Max request body size (1MB)")
@@ -248,14 +353,14 @@ class Settings(BaseSettings):
     # Chunk filter – before generate: LLM selects relevant chunks
     chunk_filter_enabled: bool = Field(
         default=True,
-        description="Before generate, LLM filters chunks to only those relevant to the question.",
+        description="[Deprecated] Chunk filter is removed in Phase 3. Kept for config compatibility only.",
     )
 
     # Phase 3: Decision Router
     decision_router_enabled: bool = Field(default=True, description="Enable decision router before LLM (ASK_USER/ESCALATE without LLM call)")
     decision_router_use_llm: bool = Field(
         default=True,
-        description="Use LLM for gray zone decisions (hybrid: deterministic rules first)",
+        description="[Deprecated] Decision router is deterministic-only in Phase 3. Kept for config compatibility.",
     )
     decision_router_llm_model: str = Field(default="gpt-4o-mini", description="Model for decision router LLM")
 
@@ -298,6 +403,10 @@ class Settings(BaseSettings):
 
     # Intent cache (who am i, what can you do - skip LLM)
     intent_cache_enabled: bool = Field(default=True, description="Return predefined answers for common intents")
+    intent_cache_disabled_keys: list[str] = Field(
+        default=["refund_policy"],
+        description="Intent keys that should never bypass retrieval/generation (e.g. refund_policy).",
+    )
     llm_max_tokens: int = Field(default=2048, description="Max output tokens (keep under model context)")
     llm_max_evidence_chars: int = Field(default=1200, description="Max chars per evidence chunk in prompt")
     llm_timeout_seconds: float = Field(default=60.0)

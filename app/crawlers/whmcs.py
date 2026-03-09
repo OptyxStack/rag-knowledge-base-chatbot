@@ -4,12 +4,16 @@ Flow:
 1. Login (if credentials provided)
 2. Each list page: get IDs → crawl detail immediately (supporttickets.php?action=view&id=XXX) → move to next list page
 3. ticket_queue: put each ticket as soon as crawl finishes (save DB async)
-4. Skip system alert tickets (Monitor, Hypervisor, cpu usage, load average, Server Reboot) - save ID to skipped list
+4. Skip NOTI tickets (system alerts/notifications) - save ID to skipped list, do not crawl/save
 5. Return list of ticket dicts
+
+NOTI = ticket thông báo tự động từ monitoring/system, không cần hội thoại với khách.
+CONV = ticket do người dùng mở để hỏi, yêu cầu hỗ trợ.
 """
 
 import json
 import os
+import re
 import queue
 from datetime import datetime
 from pathlib import Path
@@ -32,29 +36,77 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Ticket subject patterns = system alerts/notifications → skip crawl, save ID to skipped list
-_SKIP_PATTERNS = (
-    "monitor is down",
-    "monitor is up",
-    "hypervisor connection check failed",
-    "hypervisor connection check recovered",
-    "server reboot alert",
-    "cpu usage (",
-    "load average",
+# Subject prefixes = NOTI (system alert) → skip crawl
+_NOTI_SUBJECT_PREFIXES = (
+    "hypervisor connection check",
+    "monitor is down:",
+    "monitor is up:",
+    "server reboot alert:",
+    "open -",
+    "closed -",
+    "having an issue with hard drive on server:",
+    "ipmi sel alert:",
+    "??? ipmi sel alert:",
 )
 
+# Subject contains = NOTI (e.g. Re: Invoice Payment Reminder)
+_NOTI_SUBJECT_CONTAINS = (
+    "invoice payment reminder",
+)
 
-def _is_system_alert_ticket(subject: str | None) -> bool:
-    """True if subject is a system alert ticket (Monitor, Hypervisor, cpu/load)."""
-    if not subject or not subject.strip():
+# Sender patterns (email or name) = system/automated → NOTI when subject is infrastructure
+_NOTI_SENDER_PATTERN = re.compile(
+    r"(?i)(noreply|uptimerobot|platform360|green\s*cloud|monitor|alert|robot)",
+)
+
+# Subject keywords for sender-based NOTI (e.g. Route Reflector Upgrade from system)
+_NOTI_INFRA_SUBJECT_KEYWORDS = ("route reflector", "upgrade")
+
+
+def _is_noti_ticket(ticket: dict[str, Any]) -> bool:
+    """True if ticket is NOTI - uses subject + email/name from detail."""
+    subject = (ticket.get("subject") or "").strip()
+    email = (ticket.get("email") or "").strip()
+    name = (ticket.get("name") or "").strip()
+    sender = f"{email} {name}".strip()
+    return _is_noti_from_subject_sender(subject, sender)
+
+
+def _is_noti_from_subject_sender(subject: str, sender: str) -> bool:
+    """
+    True if NOTI (system notification) - skip crawl.
+    Works with subject + sender from list page (#ID - Subject, Owner column).
+    Label = NOTI if:
+    1) subject starts with NOTI prefix, OR
+    2) sender is system AND subject looks like infrastructure alert.
+    """
+    subject = (subject or "").strip()
+    if not subject:
         return False
-    s = subject.lower().strip()
-    for pat in _SKIP_PATTERNS:
+
+    s = subject.lower()
+
+    # 1) Subject prefix match
+    for prefix in _NOTI_SUBJECT_PREFIXES:
+        if s.startswith(prefix):
+            return True
+
+    # 1b) Subject contains (e.g. Re: Invoice Payment Reminder)
+    for pat in _NOTI_SUBJECT_CONTAINS:
         if pat in s:
             return True
-    # CLOSED - / OPEN - with server name (e.g. CLOSED - SG2- MILAN3 - 96.9.210.15 load average)
-    if ("closed - " in s or "open - " in s) and ("cpu usage" in s or "load average" in s):
-        return True
+
+    # 2) Sender-based: system sender + infrastructure subject
+    sender = (sender or "").strip().lower()
+    if not sender:
+        return False
+
+    if not _NOTI_SENDER_PATTERN.search(sender):
+        return False
+
+    for kw in _NOTI_INFRA_SUBJECT_KEYWORDS:
+        if kw in s:
+            return True
     return False
 
 
@@ -199,12 +251,41 @@ def _login_if_needed(page: Page, config: WHMCSConfig) -> bool:
     return True
 
 
-def _collect_ticket_ids_from_page(page: Page, base_url: str) -> list[str]:
+def _parse_subject_from_link_text(link_text: str, tid: str) -> str:
+    """Parse subject from link text '#ID - Subject' or '#ID - Subject'."""
+    text = (link_text or "").strip()
+    # "#896554 - VPS Down" -> "VPS Down"
+    match = re.match(r"^#\d+\s*-\s*(.+)$", text)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
+def _get_sender_from_list_row(anchor) -> str:
+    """Get sender (requester) from same table row as ticket link. WHMCS: 'noreply green Owner', 'Dev Null Authorized User'."""
+    try:
+        return anchor.evaluate("""
+            el => {
+                const tr = el.closest('tr');
+                if (!tr) return '';
+                const tds = tr.querySelectorAll('td');
+                for (const td of tds) {
+                    const t = td.innerText.trim();
+                    if (t.includes('Owner') || t.includes('Authorized User')) return t;
+                }
+                return '';
+            }
+        """) or ""
+    except Exception:
+        return ""
+
+
+def _collect_ticket_rows_from_page(page: Page, base_url: str) -> list[dict[str, Any]]:
     """
-    Extract ticket IDs from current list page (IDs only, no content).
-    WHMCS table: <a href="supporttickets.php?action=view&id=XXX">
+    Extract ticket rows from list page: id, subject, sender.
+    List format: #ID - Subject | Sender (noreply green Owner, UptimeRobot, etc.)
     """
-    ids: list[str] = []
+    rows: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     anchors = page.query_selector_all('a[href*="supporttickets.php"][href*="action=view"][href*="id="]')
@@ -213,10 +294,19 @@ def _collect_ticket_ids_from_page(page: Page, base_url: str) -> list[str]:
         if not href:
             continue
         tid = _extract_ticket_id_from_url(urljoin(base_url + "/", href))
-        if tid and tid not in seen:
-            seen.add(tid)
-            ids.append(tid)
-    return ids
+        if not tid or tid in seen:
+            continue
+        seen.add(tid)
+        link_text = a.inner_text().strip()
+        subject = _parse_subject_from_link_text(link_text, tid)
+        sender = _get_sender_from_list_row(a)
+        rows.append({"id": tid, "subject": subject, "sender": sender})
+    return rows
+
+
+def _collect_ticket_ids_from_page(page: Page, base_url: str) -> list[str]:
+    """Extract ticket IDs only (backward compat)."""
+    return [r["id"] for r in _collect_ticket_rows_from_page(page, base_url)]
 
 
 def _is_list_url(url: str) -> bool:
@@ -301,11 +391,15 @@ def _crawl_list_and_details(
 
     while page_count < max_pages:
         page_count += 1
-        ids = _collect_ticket_ids_from_page(page, config.base_url)
+        ticket_rows = _collect_ticket_rows_from_page(page, config.base_url)
+        ids = [r["id"] for r in ticket_rows]
         added = 0
 
-        # Crawl detail immediately for each new ID from this list page
-        for tid in ids:
+        # For each ticket: filter NOTI from list (subject + sender) before crawl; only crawl CONV
+        for row in ticket_rows:
+            tid = row["id"]
+            subject = row.get("subject") or ""
+            sender = row.get("sender") or ""
             if tid in seen_ids:
                 continue
             if tid in skipped_ids:
@@ -314,17 +408,30 @@ def _crawl_list_and_details(
                 continue
             seen_ids.add(tid)
             added += 1
+
+            # Filter NOTI from list page - skip detail crawl entirely
+            if _is_noti_from_subject_sender(subject, sender):
+                _save_skipped_id(tid, skipped_ids)
+                skipped_this_run += 1
+                logger.info(
+                    "whmcs_crawler_skipped_noti",
+                    id=tid,
+                    subject=subject[:60],
+                    sender=sender[:40],
+                )
+                continue
+
             detail_url = f"{base}/supporttickets.php?action=view&id={tid}"
             try:
                 t = _extract_ticket_detail(page, detail_url)
-                subject = t.get("subject") or ""
-                if _is_system_alert_ticket(subject):
+                # Double-check with detail data (subject may differ slightly)
+                if _is_noti_ticket(t):
                     _save_skipped_id(tid, skipped_ids)
                     skipped_this_run += 1
                     logger.info(
-                        "whmcs_crawler_skipped_system_alert",
+                        "whmcs_crawler_skipped_noti_detail",
                         id=tid,
-                        subject=subject[:60],
+                        subject=(t.get("subject") or "")[:60],
                     )
                     continue
                 tickets.append(t)
@@ -334,7 +441,7 @@ def _crawl_list_and_details(
                     "whmcs_crawler_detail",
                     id=tid,
                     list_page=page_count,
-                    subject=subject[:60],
+                    subject=(t.get("subject") or "")[:60],
                     status=t.get("status"),
                 )
             except Exception as e:

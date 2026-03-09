@@ -100,7 +100,7 @@ def test_next_action_deciding_escalate_returns_escalate():
 
 
 def test_next_action_deciding_ask_user_returns_ask_user():
-    """ASK_USER from decision router is terminal; retry only from reviewer RETRIEVE_MORE."""
+    """ASK_USER from decision router is terminal."""
     orch = Orchestrator()
     ctx = _ctx(
         OrchestratorState.DECIDING,
@@ -124,14 +124,14 @@ def test_next_action_reviewing_pass_returns_done():
     assert orch.next_action(ctx, reviewer_status="PASS") == OrchestratorAction.DONE
 
 
-def test_next_action_reviewing_retrieve_more_returns_retry():
+def test_next_action_reviewing_retrieve_more_defaults_to_ask_user():
     orch = Orchestrator()
     ctx = _ctx(
         OrchestratorState.REVIEWING,
         retrieval_attempt=0,
         max_attempts=2,
     )
-    assert orch.next_action(ctx, reviewer_status="RETRIEVE_MORE") == OrchestratorAction.RETRY_RETRIEVE
+    assert orch.next_action(ctx, reviewer_status="RETRIEVE_MORE") == OrchestratorAction.ASK_USER
 
 
 def test_next_action_retrying_returns_retrieve():
