@@ -26,6 +26,10 @@ htmlcov/
 Thumbs.db
 .idea/
 .vscode/
+.history/
+
+# Frontend is built from ./frontend context; exclude from backend image context
+frontend/
 
 # Local docs/source payloads are mounted at runtime when needed
 source/

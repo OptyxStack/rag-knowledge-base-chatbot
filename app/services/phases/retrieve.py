@@ -23,11 +23,16 @@ async def execute_retrieve(
     _pipeline_log("retrieve", "start", attempt=attempt, query=ctx.effective_query[:80], trace_id=ctx.trace_id)
 
     retry_strategy = None
-    if attempt == 2 and ctx.quality_report:
+    if attempt > 1:
         evidence_eval = ctx.extra.get("evidence_eval_result")
+        missing_signals = (
+            list(ctx.quality_report.missing_signals)
+            if ctx.quality_report and getattr(ctx.quality_report, "missing_signals", None)
+            else ["missing_evidence"]
+        )
         retry_strategy = plan_retry(
-            ctx.quality_report.missing_signals if ctx.quality_report else [],
-            2,
+            missing_signals,
+            attempt,
             evidence_eval_result=evidence_eval,
             query_spec=ctx.query_spec,
         )
@@ -53,8 +58,16 @@ async def execute_retrieve(
             "boost_patterns": (retry_strategy.boost_patterns or [])[:5],
             "filter_doc_types": retry_strategy.filter_doc_types,
             "suggested_query": retry_strategy.suggested_query,
+            "hypothesis_name": retry_strategy.hypothesis_name,
+            "hypothesis_index": retry_strategy.hypothesis_index,
         })
     ctx.extra["retry_strategy_applied"] = retry_strategy_applied
+    ctx.extra["active_required_evidence"] = list(retrieval_plan.active_required_evidence or [])
+    ctx.extra["active_hard_requirements"] = list(retrieval_plan.active_hard_requirements or [])
+    ctx.extra["active_soft_requirements"] = list(retrieval_plan.active_soft_requirements or [])
+    ctx.extra["active_hypothesis_name"] = retrieval_plan.active_hypothesis_name
+    ctx.extra["active_answer_shape"] = retrieval_plan.answer_shape
+    ctx.extra["active_evidence_families"] = list(retrieval_plan.evidence_families or [])
 
     evidence_pack = await retrieval.retrieve(
         ctx.effective_query,
@@ -94,6 +107,16 @@ async def execute_retrieve(
                 "pct_chunks_boilerplate_gt_06": round(hygiene.pct_chunks_boilerplate_gt_06, 1),
                 "median_content_density": round(hygiene.median_content_density, 3),
             }
+    history = list(ctx.extra.get("hypothesis_history", []))
+    history.append({
+        "name": retrieval_plan.active_hypothesis_name,
+        "retrieval_profile": retrieval_plan.profile,
+        "evidence_families": list(retrieval_plan.evidence_families or []),
+        "required_evidence": list(retrieval_plan.active_required_evidence or []),
+        "hard_requirements": list(retrieval_plan.active_hard_requirements or []),
+        "evidence_count": len(evidence),
+    })
+    ctx.extra["hypothesis_history"] = history
 
     return PhaseResult(
         evidence_pack=evidence_pack,

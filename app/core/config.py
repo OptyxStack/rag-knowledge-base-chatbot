@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     # Auth
     api_key: str = Field(default="", description="API key for standard access")
     admin_api_key: str = Field(default="", description="Admin API key for ingest/admin")
+    jwt_secret: str = Field(
+        default="change-me-in-production",
+        description="Secret for JWT signing (JWT_SECRET). Must be set in production.",
+    )
+    jwt_algorithm: str = Field(default="HS256", description="JWT algorithm")
+    jwt_expire_minutes: int = Field(default=60 * 24 * 7, ge=5, le=60 * 24 * 365)
 
     # Database
     database_url: str = Field(
@@ -411,6 +417,20 @@ class Settings(BaseSettings):
     llm_max_evidence_chars: int = Field(default=1200, description="Max chars per evidence chunk in prompt")
     llm_timeout_seconds: float = Field(default=60.0)
     llm_retry_attempts: int = Field(default=2)
+
+    # WHMCS crawler (sample conversations)
+    whmcs_base_url: str = Field(
+        default="",
+        description="WHMCS base URL for crawler (e.g. https://example.com/billing). Empty = user must enter in UI.",
+    )
+    whmcs_list_path: str = Field(
+        default="supporttickets.php?filter=1",
+        description="WHMCS ticket list path (relative to base_url)",
+    )
+    whmcs_login_path: str = Field(
+        default="login.php",
+        description="WHMCS login page path (relative to base_url)",
+    )
 
     # Object storage (MinIO/S3)
     object_storage_url: str = Field(default="", description="S3/MinIO endpoint")

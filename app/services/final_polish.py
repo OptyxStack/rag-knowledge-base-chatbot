@@ -13,6 +13,7 @@ RULES:
 - Do NOT change factual content, numbers, prices, or links
 - Do NOT add information not in the original
 - You may: fix grammar, improve flow, add brief transitions, format lists
+- Keep the voice as first-person company ("we", "our", "us")—avoid third-person or detached phrasing
 - Output ONLY the polished answer, no JSON, no explanation"""
 
 

@@ -43,6 +43,8 @@ def test_load_eval_cases_contains_required_replay_classes():
     tags = {tag for case in cases for tag in case.tags}
 
     assert "ambiguous_referent" in tags
+    assert "recommendation_refinement" in tags
+    assert "conversation_capability" in tags
     assert "policy_question" in tags
     assert "pricing_question" in tags
     assert "troubleshooting_steps" in tags

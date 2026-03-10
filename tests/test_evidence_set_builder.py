@@ -1,7 +1,5 @@
 """Tests for evidence set builder (Workstream 3)."""
 
-import pytest
-
 from app.search.base import SearchChunk
 from app.services.evidence_set_builder import build_evidence_set
 from app.services.schemas import CandidatePool, QuerySpec, RetrievalPlan
@@ -101,3 +99,33 @@ def test_build_evidence_set_with_coverage_map():
     # Primary should include c1, c2 (from coverage_map)
     assert "c1" in es.primary_chunks
     assert "c2" in es.primary_chunks
+
+
+def test_build_evidence_set_rejects_invalid_policy_mapping_from_faq(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.evidence_set_builder.get_settings",
+        lambda: type("S", (), {"reviewer_policy_doc_types": ["policy", "tos"], "evidence_requirement_keywords": {}, "evidence_requirement_regex_patterns": {}})(),
+    )
+    chunks = [
+        (SearchChunk("c1", "d1", "faq refund content", "url1", "faq", 0.9), 0.95),
+    ]
+    spec = QuerySpec(
+        intent="policy",
+        entities=[],
+        constraints={},
+        required_evidence=["policy_language"],
+        risk_level="low",
+        keyword_queries=[],
+        semantic_queries=[],
+        clarifying_questions=[],
+        is_ambiguous=False,
+    )
+    plan = RetrievalPlan(
+        profile="policy_profile",
+        attempt_index=1,
+        reason="broad_hybrid",
+        query_keyword="refund",
+        query_semantic="refund",
+    )
+    es = build_evidence_set(chunks, spec, plan, coverage_map={"policy_language": "c1"})
+    assert "policy_language" not in es.covered_requirements

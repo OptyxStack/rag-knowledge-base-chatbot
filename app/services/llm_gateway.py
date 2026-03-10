@@ -203,6 +203,25 @@ class OpenAIGateway(LLMGateway):
             logger.debug("llm_cache_set_failed", error=str(e))
 
 
+async def clear_llm_cache() -> dict[str, int]:
+    """Clear Redis-backed LLM cache namespace."""
+    settings = get_settings()
+    try:
+        import redis.asyncio as redis
+
+        r = redis.from_url(settings.redis_url, decode_responses=False)
+        keys = await r.keys("llm_cache:*")
+        deleted = 0
+        if keys:
+            deleted = int(await r.delete(*keys))
+        await r.close()
+        logger.info("llm_cache_cleared", deleted_keys=deleted)
+        return {"deleted_keys": deleted}
+    except Exception as e:
+        logger.warning("llm_cache_clear_failed", error=str(e))
+        return {"deleted_keys": 0}
+
+
 def get_llm_gateway() -> LLMGateway:
     """Factory for LLM gateway."""
     settings = get_settings()

@@ -2,15 +2,12 @@ import { useEffect, useState } from 'react'
 import { admin, type CheckWhmcsCookiesResponse, type CrawlTicketsResponse } from '../api/client'
 import { Loader2, Globe, Key, Shield, Database, LogIn, CheckCircle2, AlertCircle, Cookie, ExternalLink, Save, Link2 } from 'lucide-react'
 
-const DEFAULT_BASE_URL = 'https://greencloudvps.com/billing/greenvps'
 const DEFAULT_LIST_PATH = 'supporttickets.php?filter=1'
 const DEFAULT_LOGIN_PATH = 'login.php'
-const LOGIN_URL = `${DEFAULT_BASE_URL}/${DEFAULT_LOGIN_PATH}`
-const LIST_URL = `${DEFAULT_BASE_URL}/${DEFAULT_LIST_PATH}`
 
 const COOKIE_EXAMPLE = `[
-  {"name": "WHMCSxyz", "value": "abc123...", "domain": ".greencloudvps.com", "path": "/"},
-  {"name": "PHPSESSID", "value": "...", "domain": ".greencloudvps.com", "path": "/"}
+  {"name": "WHMCSxyz", "value": "abc123...", "domain": ".example.com", "path": "/"},
+  {"name": "PHPSESSID", "value": "...", "domain": ".example.com", "path": "/"}
 ]`
 
 export default function Crawler() {
@@ -26,7 +23,7 @@ export default function Crawler() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [totpCode, setTotpCode] = useState('')
-  const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL)
+  const [baseUrl, setBaseUrl] = useState('')
   const [listPath, setListPath] = useState(DEFAULT_LIST_PATH)
   const [loginPath, setLoginPath] = useState(DEFAULT_LOGIN_PATH)
   const [crawling, setCrawling] = useState(false)
@@ -47,6 +44,17 @@ export default function Crawler() {
     admin.getWhmcsCookies().then(setCookiesStatus).catch(() => setCookiesStatus({ saved: false, count: 0 }))
   }, [saveCookiesResult])
 
+  useEffect(() => {
+    admin
+      .getWhmcsDefaults()
+      .then((d) => {
+        if (d.base_url) setBaseUrl(d.base_url)
+        if (d.list_path) setListPath(d.list_path)
+        if (d.login_path) setLoginPath(d.login_path)
+      })
+      .catch(() => {})
+  }, [])
+
   const [checkDebug, setCheckDebug] = useState(false)
 
   const handleCheckConnect = async (useInlineCookies: boolean) => {
@@ -63,7 +71,7 @@ export default function Crawler() {
     setCheckingConnect(true)
     try {
       const payload = {
-        base_url: baseUrl.trim() || DEFAULT_BASE_URL,
+        base_url: baseUrl.trim(),
         list_path: listPath.trim() || DEFAULT_LIST_PATH,
         debug: checkDebug,
         ...(cookies && cookies.length > 0 ? { session_cookies: cookies } : {}),
@@ -116,10 +124,15 @@ export default function Crawler() {
       }
     }
 
+    if (!baseUrl.trim()) {
+      setCrawlError('Enter base URL or configure WHMCS_BASE_URL in env')
+      return
+    }
+
     setCrawling(true)
     try {
       const payload: Parameters<typeof admin.crawlTickets>[0] = {
-        base_url: baseUrl.trim() || DEFAULT_BASE_URL,
+        base_url: baseUrl.trim(),
         list_path: listPath.trim() || DEFAULT_LIST_PATH,
         login_path: loginPath.trim() || DEFAULT_LOGIN_PATH,
       }
@@ -171,18 +184,28 @@ export default function Crawler() {
         <div className="mb-4 p-4 rounded-xl bg-black/30 font-mono text-xs overflow-x-auto space-y-1 text-zinc-400 border border-white/[0.03]">
           <div>.\.venv-login\Scripts\Activate.ps1   <span className="text-zinc-600"># Windows</span></div>
           <div>source .venv-login/bin/activate     <span className="text-zinc-600"># Linux/Mac</span></div>
-          <div className="mt-2">python scripts/whmcs_login_browser.py --api-url http://localhost:8000/v1 --api-key dev-key</div>
+          <div className="mt-2">python scripts/whmcs_login_browser.py --api-url http://localhost:8000/v1 --api-key &lt;YOUR_API_KEY&gt;</div>
         </div>
         <p className="text-xs text-zinc-500 mb-5">
           Run on local machine (not in Docker). API can run in Docker, use --api-url http://localhost:8000/v1.
         </p>
         <p className="text-sm text-zinc-400 mb-4">
           <strong className="text-zinc-300">Method 2 – Copy cookies manually:</strong>{' '}
-          <a href={LOGIN_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 transition-colors">
-            <ExternalLink size={13} />
-            Open WHMCS login page
-          </a>
-          {' → '}Login (solve CAPTCHA if any) → F12 → Application → Cookies → Copy → Paste JSON into field below
+          {baseUrl ? (
+            <>
+              <a
+                href={`${baseUrl.replace(/\/$/, '')}/${loginPath}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 transition-colors"
+              >
+                <ExternalLink size={13} />
+                Open WHMCS login page
+              </a>
+              {' → '}
+            </>
+          ) : null}
+          Login (solve CAPTCHA if any) → F12 → Application → Cookies → Copy → Paste JSON into field below
         </p>
         <form onSubmit={handleSaveCookies} className="space-y-4">
           <textarea
@@ -269,9 +292,18 @@ export default function Crawler() {
         </h2>
         <p className="text-sm text-zinc-400 mb-5">
           Use saved cookies or Username/Password. Conversation list at{' '}
-          <a href={LIST_URL} target="_blank" rel="noopener noreferrer" className="text-violet-400 hover:text-violet-300 transition-colors">
-            supporttickets.php?filter=1
-          </a>
+          {baseUrl ? (
+            <a
+              href={`${baseUrl.replace(/\/$/, '')}/${listPath}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-violet-400 hover:text-violet-300 transition-colors"
+            >
+              {listPath}
+            </a>
+          ) : (
+            <span>{listPath}</span>
+          )}
         </p>
 
         <form onSubmit={handleCrawl} className="space-y-5">
@@ -365,7 +397,7 @@ export default function Crawler() {
                 type="url"
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder={DEFAULT_BASE_URL}
+                placeholder="https://example.com/billing (or set WHMCS_BASE_URL in env)"
                 className="w-full px-4 py-2.5 rounded-xl input-glass text-sm"
                 disabled={crawling}
               />

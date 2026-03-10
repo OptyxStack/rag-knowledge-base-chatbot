@@ -25,11 +25,15 @@ def _extract_partial_links(evidence: list[EvidenceChunk], max_links: int = 3) ->
 
 def _build_ask_user_missing_constraints(query_spec: QuerySpec) -> str:
     """Human response when constraints are missing."""
-    questions = query_spec.clarifying_questions or []
+    questions = (
+        query_spec.blocking_clarifying_questions
+        or query_spec.clarifying_questions
+        or []
+    )
     if questions:
         rendered = "\n".join(f"- {q}" for q in questions[:3])
-        return f"I need one detail before answering:\n{rendered}"
-    return "I need one detail before answering. Could you specify your product, budget, or region?"
+        return f"We need one detail before answering:\n{rendered}"
+    return "We need one detail before answering. Could you specify your product, budget, or region?"
 
 
 def _build_ask_user_evidence_gap(
@@ -40,16 +44,16 @@ def _build_ask_user_evidence_gap(
     if partial_links:
         links = "\n".join(f"- {url}" for url in partial_links[:3])
         return (
-            "I couldn't verify enough details from the current evidence.\n"
+            "We couldn't verify enough details from our documentation.\n"
             f"You can check these related pages:\n{links}\n"
             "If you want, rephrase your question with the exact detail you need."
         )
 
     missing = list((quality_report.missing_signals if quality_report else []) or [])
     if not missing:
-        return "I couldn't verify enough details from the current evidence. Could you rephrase your question?"
+        return "We couldn't verify enough details from our documentation. Could you rephrase your question?"
     return (
-        "I couldn't verify enough details from the current evidence. "
+        "We couldn't verify enough details from our documentation. "
         f"Missing signals: {', '.join(missing[:3])}. "
         "Could you rephrase your question?"
     )
@@ -57,11 +61,58 @@ def _build_ask_user_evidence_gap(
 
 def _build_ask_user_ambiguous(query_spec: QuerySpec) -> str:
     """Human response when query is ambiguous."""
-    questions = query_spec.clarifying_questions or []
+    questions = (
+        query_spec.blocking_clarifying_questions
+        or query_spec.clarifying_questions
+        or []
+    )
     if questions:
         rendered = "\n".join(f"- {q}" for q in questions[:3])
-        return f"I need clarification before answering:\n{rendered}"
+        return f"We need a bit more clarification before answering:\n{rendered}"
     return "Could you clarify what you need?"
+
+
+def _get_refinement_questions(query_spec: QuerySpec | None) -> list[str]:
+    if not query_spec:
+        return []
+    questions = (
+        query_spec.refinement_questions
+        or (
+            query_spec.clarifying_questions
+            if getattr(query_spec, "answerable_without_clarification", True)
+            else []
+        )
+        or []
+    )
+    return questions[:1]
+
+
+def _requires_blocking_clarification(query_spec: QuerySpec | None) -> bool:
+    if not query_spec:
+        return False
+    if getattr(query_spec, "answerable_without_clarification", True) is False:
+        return True
+    return bool(query_spec.is_ambiguous and not _get_refinement_questions(query_spec))
+
+
+def _should_use_pass_weak(
+    query_spec: QuerySpec | None,
+    evidence: list[EvidenceChunk],
+    passes_quality_gate: bool,
+) -> bool:
+    if not query_spec or not evidence or not passes_quality_gate:
+        return False
+    if str(getattr(query_spec, "risk_level", "")).lower() == "high":
+        return False
+    if getattr(query_spec, "answerable_without_clarification", True) is False:
+        return False
+    if getattr(query_spec, "assistant_should_lead", False):
+        return True
+    if getattr(query_spec, "answer_mode_hint", "") == "weak":
+        return True
+    if getattr(query_spec, "missing_info_for_refinement", None):
+        return True
+    return bool(_get_refinement_questions(query_spec))
 
 
 def _build_escalate_response() -> str:
@@ -84,11 +135,15 @@ def route(
     """
     _ = required_evidence
 
-    if query_spec and query_spec.is_ambiguous:
+    if _requires_blocking_clarification(query_spec):
         return DecisionResult(
             decision="ASK_USER",
             reason="ambiguous_query",
-            clarifying_questions=query_spec.clarifying_questions,
+            clarifying_questions=(
+                query_spec.blocking_clarifying_questions
+                or query_spec.clarifying_questions
+                or []
+            ),
             partial_links=[],
             answer=_build_ask_user_ambiguous(query_spec),
             answer_policy="clarify",
@@ -122,11 +177,25 @@ def route(
         return DecisionResult(
             decision="ASK_USER",
             reason="missing_constraints",
-            clarifying_questions=query_spec.clarifying_questions,
+            clarifying_questions=(
+                query_spec.blocking_clarifying_questions
+                or query_spec.clarifying_questions
+                or []
+            ),
             partial_links=[],
             answer=_build_ask_user_missing_constraints(query_spec),
             answer_policy="clarify",
             lane="ASK_USER",
+        )
+
+    if _should_use_pass_weak(query_spec, evidence, passes_quality_gate):
+        return DecisionResult(
+            decision="PASS",
+            reason="answerable_with_refinement",
+            clarifying_questions=_get_refinement_questions(query_spec),
+            partial_links=[],
+            answer_policy="bounded",
+            lane="PASS_WEAK",
         )
 
     return DecisionResult(

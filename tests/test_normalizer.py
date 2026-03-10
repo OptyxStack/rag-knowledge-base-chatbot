@@ -138,6 +138,127 @@ async def test_normalize_policy(mock_get_gateway):
 
 @patch("app.services.normalizer.get_llm_gateway")
 @pytest.mark.asyncio
+async def test_normalize_separates_refinement_from_blocking(mock_get_gateway):
+    mock_gateway = MagicMock()
+    mock_gateway.chat = AsyncMock(
+        return_value=_mock_llm_response({
+            "canonical_query_en": "Which VPS plan would you recommend for SEO tools?",
+            "intent": "transactional",
+            "entities": ["vps", "seo tools"],
+            "required_evidence": ["pricing", "has_any_url"],
+            "risk_level": "low",
+            "is_ambiguous": True,
+            "answerable_without_clarification": True,
+            "missing_info_blocking": [],
+            "missing_info_for_refinement": ["budget", "location"],
+            "blocking_clarifying_questions": [],
+            "refinement_questions": ["What budget range works for you?"],
+            "assistant_should_lead": True,
+            "retrieval_rewrites": ["vps plan for seo tools"],
+            "skip_retrieval": False,
+        })
+    )
+    mock_get_gateway.return_value = mock_gateway
+
+    spec = await normalize("for running seo tool, idk can u give me some plan")
+
+    assert spec.answerable_without_clarification is True
+    assert spec.is_ambiguous is False
+    assert spec.answer_mode_hint == "weak"
+    assert spec.assistant_should_lead is True
+    assert spec.required_evidence == ["numbers_units", "has_any_url"]
+    assert spec.refinement_questions == ["What budget range works for you?"]
+    assert spec.clarifying_questions == ["What budget range works for you?"]
+    assert spec.missing_info_for_refinement == ["budget", "location"]
+
+
+@patch("app.services.normalizer.get_llm_gateway")
+@pytest.mark.asyncio
+async def test_normalize_filters_unsupported_evidence_labels(mock_get_gateway):
+    mock_gateway = MagicMock()
+    mock_gateway.chat = AsyncMock(
+        return_value=_mock_llm_response({
+            "canonical_query_en": "pricing and order link",
+            "intent": "transactional",
+            "entities": ["vps"],
+            "required_evidence": ["pricing", "transaction_link", "custom_signal"],
+            "hard_requirements": ["pricing", "custom_signal"],
+            "soft_requirements": ["links", "custom_signal"],
+            "risk_level": "medium",
+            "is_ambiguous": False,
+            "clarifying_questions": [],
+            "retrieval_rewrites": ["pricing order"],
+            "skip_retrieval": False,
+        })
+    )
+    mock_get_gateway.return_value = mock_gateway
+
+    spec = await normalize("pricing and order link")
+
+    assert spec.required_evidence == ["numbers_units", "transaction_link"]
+    assert spec.hard_requirements == ["numbers_units"]
+    assert spec.soft_requirements == ["has_any_url"]
+
+
+@patch("app.services.normalizer.get_llm_gateway")
+@pytest.mark.asyncio
+async def test_normalize_accepts_conversation_doc_type_prior(mock_get_gateway):
+    mock_gateway = MagicMock()
+    mock_gateway.chat = AsyncMock(
+        return_value=_mock_llm_response({
+            "canonical_query_en": "Can I buy more IP for my VPS?",
+            "intent": "transactional",
+            "entities": ["vps", "ip"],
+            "required_evidence": ["has_any_url"],
+            "risk_level": "low",
+            "doc_type_prior": ["pricing", "conversation"],
+            "is_ambiguous": False,
+            "clarifying_questions": [],
+            "retrieval_rewrites": ["buy more ip vps"],
+            "skip_retrieval": False,
+        })
+    )
+    mock_get_gateway.return_value = mock_gateway
+
+    spec = await normalize("can i buy more ip for my vps")
+
+    assert spec.doc_type_prior == ["pricing", "conversation"]
+
+
+@patch("app.services.normalizer.get_llm_gateway")
+@pytest.mark.asyncio
+async def test_normalize_builds_primary_and_fallback_hypotheses(mock_get_gateway):
+    mock_gateway = MagicMock()
+    mock_gateway.chat = AsyncMock(
+        return_value=_mock_llm_response({
+            "canonical_query_en": "Can I buy additional IP addresses for my VPS?",
+            "intent": "transactional",
+            "entities": ["vps", "additional ip"],
+            "required_evidence": ["numbers_units"],
+            "risk_level": "low",
+            "evidence_families": ["capability_availability", "pricing_limits"],
+            "answer_shape": "yes_no",
+            "doc_type_prior": ["tos", "pricing", "conversation"],
+            "is_ambiguous": False,
+            "clarifying_questions": [],
+            "retrieval_rewrites": ["additional IPs for KVM VPS"],
+            "skip_retrieval": False,
+        })
+    )
+    mock_get_gateway.return_value = mock_gateway
+
+    spec = await normalize("can i buy more ip for my vps")
+
+    assert spec.evidence_families == ["capability_availability", "pricing_limits"]
+    assert spec.answer_shape == "yes_no"
+    assert spec.primary_hypothesis is not None
+    assert spec.primary_hypothesis.name == "primary"
+    assert "tos" in (spec.primary_hypothesis.doc_type_prior or [])
+    assert len(spec.fallback_hypotheses or []) >= 1
+
+
+@patch("app.services.normalizer.get_llm_gateway")
+@pytest.mark.asyncio
 async def test_normalize_ambiguous_with_pasted_content(mock_get_gateway):
     mock_gateway = MagicMock()
     mock_gateway.chat = AsyncMock(

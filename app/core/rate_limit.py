@@ -8,6 +8,7 @@ from fastapi import HTTPException, Request, status
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.services.auth_service import decode_access_token
 
 logger = get_logger(__name__)
 
@@ -15,8 +16,23 @@ RATE_LIMIT_PREFIX = "rl:"
 RATE_LIMIT_WINDOW = 60  # seconds
 
 
+def _is_admin_bearer_request(request: Request) -> bool:
+    """Bypass rate limit only for authenticated admin users via Bearer JWT."""
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    if not auth_header.lower().startswith("bearer "):
+        return False
+    token = auth_header[7:].strip()
+    if not token:
+        return False
+    payload = decode_access_token(token)
+    return bool(payload and payload.get("sub") and payload.get("role") == "admin")
+
+
 async def rate_limit_middleware(request: Request, call_next: Callable):
     """Rate limit by external_user_id or IP."""
+    if _is_admin_bearer_request(request):
+        return await call_next(request)
+
     settings = get_settings()
     try:
         r = redis.from_url(settings.redis_url, decode_responses=True)

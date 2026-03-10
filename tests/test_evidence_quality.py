@@ -10,6 +10,7 @@ from app.services.evidence_quality import (
     QualityReport,
 )
 from app.services.retry_planner import plan_retry, RetryStrategy
+from app.services.schemas import HypothesisSpec, QuerySpec
 
 
 def test_compute_hygiene_empty():
@@ -114,3 +115,36 @@ def test_plan_retry_no_strategy_when_no_input():
     """Returns None when no evidence_eval and no rewrite_candidates."""
     strat = plan_retry(["missing_numbers"], 2)
     assert strat is None
+
+
+def test_plan_retry_switches_to_fallback_hypothesis():
+    spec = QuerySpec(
+        intent="transactional",
+        entities=[],
+        constraints={},
+        required_evidence=["numbers_units"],
+        risk_level="low",
+        keyword_queries=[],
+        semantic_queries=[],
+        clarifying_questions=[],
+        is_ambiguous=False,
+        fallback_hypotheses=[
+            HypothesisSpec(
+                name="fallback_policy",
+                evidence_families=["policy_terms"],
+                answer_shape="bounded_summary",
+                retrieval_profile="policy_profile",
+                required_evidence=["policy_language"],
+                hard_requirements=[],
+                soft_requirements=["numbers_units"],
+                preferred_sources=["conversation"],
+                query_hint="terms of service additional IPs for KVM VPS",
+            )
+        ],
+    )
+    strat = plan_retry(["missing_evidence"], 2, query_spec=spec)
+    assert strat is not None
+    assert strat.hypothesis_index == 1
+    assert strat.hypothesis_name == "fallback_policy"
+    assert strat.required_evidence_override == ["policy_language"]
+    assert strat.preferred_sources_override == ["conversation"]

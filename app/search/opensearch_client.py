@@ -420,8 +420,6 @@ class OpenSearchClient:
         # Business-aware boosts
         if boost_pricing:
             base_bool["should"].append({"term": {"doc_type": {"value": "pricing", "boost": 2.0}}})
-        # Boost conversation chunks (sample tickets) for support-style queries
-        base_bool["should"].append({"term": {"doc_type": {"value": "conversation", "boost": 1.8}}})
 
         # Function score: recency boost using effective_date (if present).
         # This helps prevent outdated policy/pricing chunks outranking newer ones.

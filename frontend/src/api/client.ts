@@ -1,19 +1,34 @@
 import axios, { type AxiosInstance } from 'axios'
 
+const STORAGE_KEY = 'support_ai_token'
+
 // Use full backend URL in dev (e.g. VITE_API_BASE=http://localhost:8000/v1), relative /v1 in prod (nginx proxies)
 const API_BASE =
   import.meta.env.VITE_API_BASE ||
   (import.meta.env.DEV ? 'http://localhost:8000/v1' : '/v1')
-// Shared key for both API and Admin (X-API-Key + X-Admin-API-Key)
-const API_KEY = import.meta.env.VITE_API_KEY || import.meta.env.VITE_ADMIN_API_KEY || 'dev-key'
+// Fallback for API key auth (external integrations). When logged in, Bearer token is used.
+const API_KEY = import.meta.env.VITE_API_KEY || import.meta.env.VITE_ADMIN_API_KEY || ''
+
+const DEFAULT_HEADERS: Record<string, string> = {
+  'Content-Type': 'application/json',
+}
+if (API_KEY) {
+  DEFAULT_HEADERS['X-API-Key'] = API_KEY
+  DEFAULT_HEADERS['X-Admin-API-Key'] = API_KEY
+}
 
 const http: AxiosInstance = axios.create({
   baseURL: API_BASE,
-  headers: {
-    'Content-Type': 'application/json',
-    'X-API-Key': API_KEY,
-    'X-Admin-API-Key': API_KEY,
-  },
+  headers: DEFAULT_HEADERS,
+})
+
+// Prefer Bearer token (from login) when available
+http.interceptors.request.use((config) => {
+  const token = localStorage.getItem(STORAGE_KEY)
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
 })
 
 http.interceptors.response.use(
@@ -77,8 +92,7 @@ export const conversations = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-API-Key': API_KEY,
-        'X-Admin-API-Key': API_KEY,
+        ...(API_KEY ? { 'X-API-Key': API_KEY, 'X-Admin-API-Key': API_KEY } : {}),
       },
       body: JSON.stringify({ content }),
     })
@@ -262,6 +276,18 @@ export interface AutoGenerateBrandingResponse {
   app_name: string
 }
 
+export interface RefreshConversationCacheResponse {
+  status: string
+  message: string
+  query_rewriter: {
+    enabled: boolean
+    deleted_keys: number
+  }
+  llm_cache: {
+    deleted_keys: number
+  }
+}
+
 export const admin = {
   getLLMConfig: () => http.get<LLMConfig>(`/admin/config/llm`).then((res) => res.data),
   updateLLMConfig: (data: LLMConfigUpdate) =>
@@ -279,6 +305,8 @@ export const admin = {
       .then((res) => res.data),
   refreshConfigCache: () =>
     http.post<{ status: string; message: string }>(`/admin/config/refresh-cache`).then((res) => res.data),
+  refreshConversationCache: () =>
+    http.post<RefreshConversationCacheResponse>(`/admin/conversations/refresh-cache`).then((res) => res.data),
   ingestFromSource: (sourceDir = 'source') =>
     http.post<IngestFromSourceResponse>(`/admin/ingest-from-source`, null, {
       params: { source_dir: sourceDir },
@@ -287,6 +315,8 @@ export const admin = {
     http.post<SaveWhmcsCookiesResponse>(`/admin/save-whmcs-cookies`, data).then((res) => res.data),
   getWhmcsCookies: () =>
     http.get<WhmcsCookiesStatus>(`/admin/whmcs-cookies`).then((res) => res.data),
+  getWhmcsDefaults: () =>
+    http.get<{ base_url: string; list_path: string; login_path: string }>(`/admin/config/whmcs`).then((res) => res.data),
   checkWhmcsCookies: (data?: CheckWhmcsCookiesRequest) =>
     http.post<CheckWhmcsCookiesResponse>(`/admin/check-whmcs-cookies`, data ?? {}).then((res) => res.data),
   crawlTickets: (data: CrawlTicketsRequest) =>
@@ -520,19 +550,18 @@ export interface Ticket {
   description: string
   status: string
   priority: string | null
+  client_id: string | null
   email: string | null
   name: string | null
   approval_status: 'pending' | 'approved' | 'rejected'
   metadata: Record<string, unknown> | null
   source_file: string | null
+  detail_url: string | null
   created_at: string | null
   updated_at: string | null
 }
 
-export interface TicketDetail extends Ticket {
-  client_id: string | null
-  detail_url: string | null
-}
+export interface TicketDetail extends Ticket {}
 
 export const tickets = {
   list: (page = 1, pageSize = 20, status?: string, approvalStatus?: string, q?: string) => {

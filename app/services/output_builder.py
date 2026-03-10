@@ -58,7 +58,7 @@ async def build_output(
         return AnswerOutput(
             decision="PASS",
             answer=answer,
-            followup_questions=[],
+            followup_questions=ctx.followup,
             citations=ctx.citations,
             confidence=ctx.confidence,
             debug=build_flow_debug(
@@ -85,6 +85,7 @@ async def build_output(
                 review_result=ctx.review_result,
                 stage_reasons=ctx.stage_reasons,
                 termination_reason=ctx.termination_reason,
+                hypothesis_judge=ctx.hypothesis_judge,
             ),
         )
 
@@ -131,6 +132,7 @@ async def build_output(
                 review_result=ctx.review_result,
                 stage_reasons=ctx.stage_reasons,
                 termination_reason=ctx.termination_reason,
+                hypothesis_judge=ctx.hypothesis_judge,
             ),
         )
 
@@ -169,15 +171,16 @@ async def build_output(
                     review_result=ctx.review_result,
                     stage_reasons=ctx.stage_reasons,
                     termination_reason=ctx.termination_reason,
+                    hypothesis_judge=ctx.hypothesis_judge,
                 ),
             )
         no_evidence = not evidence
         max_reached = not ctx.can_retry()
         no_evidence_msg = (
-            "I couldn't find relevant information in our knowledge base. "
+            "We couldn't find relevant information in our knowledge base. "
             "Could you rephrase your question or provide more context?"
         )
-        default_answer = no_evidence_msg if no_evidence else (ctx.answer or "I need more information to help. Could you clarify your question?")
+        default_answer = no_evidence_msg if no_evidence else (ctx.answer or "We need more information to help. Could you clarify your question?")
         default_followup = ["What specific topic are you asking about?"] if no_evidence else (ctx.followup or ["What specifically would you like to know?"])
         return AnswerOutput(
             decision="ASK_USER",
@@ -210,12 +213,13 @@ async def build_output(
                 review_result=ctx.review_result,
                 stage_reasons=ctx.stage_reasons,
                 termination_reason=ctx.termination_reason,
+                hypothesis_judge=ctx.hypothesis_judge,
             ),
         )
 
     return AnswerOutput(
         decision="ASK_USER",
-        answer="I need more information to help.",
+        answer="We need more information to help.",
         followup_questions=[],
         citations=[],
         confidence=0.0,

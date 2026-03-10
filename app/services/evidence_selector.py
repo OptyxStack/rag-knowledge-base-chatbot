@@ -24,6 +24,7 @@ Given a query, candidate chunks (with IDs), and required evidence types, select 
 1. Covers all required_evidence when possible (numbers, links, policy, steps)
 2. Maximizes relevance to the query
 3. Prefer diverse doc_types and diverse plans/products (avoid over-concentrating on one plan type)
+4. Preserve at least one relevant conversation chunk when it provides a useful prior support example or capability signal
 
 Required evidence types:
 - numbers_units: price, cost, specs with numbers
@@ -44,6 +45,7 @@ Rules:
 - coverage_map: requirement -> chunk_id that best satisfies it (optional, can be partial)
 - uncovered_requirements: requirements no chunk satisfies
 - Prefer diversity across doc_types and plan/product lines when candidates show multiple options. Do not treat different plans as redundant.
+- If a conversation chunk is materially relevant to the query, keep at least one such chunk alongside standard docs when possible.
 - Select 6-12 chunks based on query complexity and how many distinct options candidates offer.
 - Only use chunk IDs from the candidate list. Do not invent IDs."""
 
@@ -57,6 +59,44 @@ class EvidenceSelectionResult:
     uncovered_requirements: list[str]
     reasoning: str = ""
     used_llm: bool = False
+
+
+def _coverage_mapping_allowed(requirement: str, chunk: SearchChunk) -> bool:
+    req = str(requirement or "").strip().lower()
+    doc_type = (chunk.doc_type or "").strip().lower()
+    if req == "policy_language":
+        configured_policy_types = {
+            str(t).strip().lower()
+            for t in (get_settings().reviewer_policy_doc_types or [])
+            if str(t).strip()
+        }
+        if configured_policy_types:
+            return doc_type in configured_policy_types
+        return doc_type in {"policy", "tos"}
+    if req == "steps_structure":
+        return doc_type in {"howto", "docs", "faq", "conversation"}
+    return req in {"numbers_units", "transaction_link", "has_any_url"}
+
+
+def _validate_coverage_map(
+    coverage_map: dict[str, str],
+    *,
+    selected: list[tuple[SearchChunk, float]],
+    required_evidence: list[str],
+) -> dict[str, str]:
+    selected_by_id = {chunk.chunk_id: chunk for chunk, _ in selected}
+    allowed_requirements = {str(req).strip() for req in required_evidence if str(req).strip()}
+    validated: dict[str, str] = {}
+    for req, cid in coverage_map.items():
+        if req not in allowed_requirements:
+            continue
+        chunk = selected_by_id.get(str(cid))
+        if not chunk:
+            continue
+        if not _coverage_mapping_allowed(req, chunk):
+            continue
+        validated[req] = chunk.chunk_id
+    return validated
 
 
 async def select_evidence_for_query(
@@ -163,6 +203,12 @@ async def select_evidence_for_query(
                 if cid in chunk_by_id and cid not in seen:
                     selected.append(chunk_by_id[cid])
                     seen.add(cid)
+        coverage_map = _validate_coverage_map(
+            coverage_map,
+            selected=selected,
+            required_evidence=req_list,
+        )
+        uncovered = [req for req in req_list if req not in coverage_map]
 
         return EvidenceSelectionResult(
             selected=selected,

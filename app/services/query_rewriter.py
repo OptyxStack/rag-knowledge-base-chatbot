@@ -124,6 +124,27 @@ async def _set_cached(key: str, result: QueryRewriteResult) -> None:
         logger.debug("query_rewriter_cache_set_failed", error=str(e))
 
 
+async def clear_cache() -> dict[str, int | bool]:
+    """Clear query rewriter Redis cache namespace."""
+    settings = get_settings()
+    if not getattr(settings, "query_rewriter_cache_enabled", False):
+        return {"enabled": False, "deleted_keys": 0}
+    try:
+        import redis.asyncio as redis
+
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        keys = await r.keys("query_rewriter:*")
+        deleted = 0
+        if keys:
+            deleted = int(await r.delete(*keys))
+        await r.close()
+        logger.info("query_rewriter_cache_cleared", deleted_keys=deleted)
+        return {"enabled": True, "deleted_keys": deleted}
+    except Exception as e:
+        logger.warning("query_rewriter_cache_clear_failed", error=str(e))
+        return {"enabled": True, "deleted_keys": 0}
+
+
 async def rewrite_for_retrieval(
     query: str,
     conversation_history: list[dict[str, str]] | None = None,

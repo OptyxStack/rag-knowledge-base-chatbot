@@ -24,6 +24,7 @@ from app.api.schemas import (
     SystemPromptUpdateRequest,
     LLMConfigResponse,
     LLMConfigUpdateRequest,
+    WhmcsDefaultsResponse,
     CheckWhmcsCookiesRequest,
     CheckWhmcsCookiesResponse,
     CrawlTicketsRequest,
@@ -41,6 +42,7 @@ from app.api.schemas import (
     WHMCS_COOKIES_KEY,
 )
 from app.core.auth import verify_admin_api_key
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.models import AppConfig, DocTypeModel, Intent, Ticket
 from app.db.session import get_db
@@ -48,6 +50,8 @@ from app.services.archi_config import refresh_cache as refresh_archi_config
 from app.services.branding_config import refresh_cache
 from app.services.doc_type_service import refresh_doc_type_cache
 from app.services.llm_config import refresh_cache as refresh_llm_config
+from app.services.llm_gateway import clear_llm_cache
+from app.services.query_rewriter import clear_cache as clear_query_rewriter_cache
 
 logger = get_logger(__name__)
 
@@ -187,12 +191,21 @@ async def api_check_whmcs_cookies(
             detail="Save cookies first or send session_cookies in body.",
         )
 
+    s = get_settings()
+    effective_base_url = (body.base_url or "").strip() or s.whmcs_base_url or ""
+    effective_list_path = (body.list_path or "").strip() or s.whmcs_list_path or "supporttickets.php?filter=1"
+    if not effective_base_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Configure WHMCS_BASE_URL in env or provide base_url in request.",
+        )
+
     from app.crawlers.whmcs import check_whmcs_cookies as do_check
 
     def _run():
         return do_check(
-            base_url=body.base_url.rstrip("/"),
-            list_path=body.list_path,
+            base_url=effective_base_url.rstrip("/"),
+            list_path=effective_list_path,
             session_cookies=session_cookies,
             headless=True,
             timeout_ms=15000,
@@ -226,6 +239,17 @@ async def get_whmcs_cookies(
         return {"saved": True, "count": 0}
 
 
+@router.get("/config/whmcs", response_model=WhmcsDefaultsResponse)
+async def get_whmcs_defaults(_auth: str = Depends(verify_admin_api_key)):
+    """Get WHMCS crawler defaults from config/env (base_url, list_path, login_path)."""
+    s = get_settings()
+    return WhmcsDefaultsResponse(
+        base_url=s.whmcs_base_url or "",
+        list_path=s.whmcs_list_path or "supporttickets.php?filter=1",
+        login_path=s.whmcs_login_path or "login.php",
+    )
+
+
 @router.post("/crawl-tickets", response_model=CrawlTicketsResponse)
 async def crawl_tickets(
     body: CrawlTicketsRequest,
@@ -254,6 +278,16 @@ async def crawl_tickets(
             detail="Save cookies first (Save cookies) or provide username+password.",
         )
 
+    s = get_settings()
+    effective_base_url = (body.base_url or "").strip() or s.whmcs_base_url or ""
+    effective_list_path = (body.list_path or "").strip() or s.whmcs_list_path or "supporttickets.php?filter=1"
+    effective_login_path = (body.login_path or "").strip() or s.whmcs_login_path or "login.php"
+    if not effective_base_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Configure WHMCS_BASE_URL in env or provide base_url in request.",
+        )
+
     from app.crawlers.whmcs import WHMCSConfig, crawl_whmcs_tickets
     from app.services.ticket_db import upsert_ticket_from_crawl
 
@@ -276,9 +310,9 @@ async def crawl_tickets(
 
     def _run_crawl():
         config = WHMCSConfig(
-            base_url=body.base_url.rstrip("/"),
-            list_path=body.list_path,
-            login_path=body.login_path,
+            base_url=effective_base_url.rstrip("/"),
+            list_path=effective_list_path,
+            login_path=effective_login_path,
             username=body.username,
             password=body.password,
             totp_code=body.totp_code,
@@ -557,6 +591,21 @@ async def refresh_config_cache(
     await refresh_llm_config(db)
     await refresh_archi_config(db)
     return {"status": "ok", "message": "Cache refreshed"}
+
+
+@router.post("/conversations/refresh-cache")
+async def refresh_conversation_cache(_auth: str = Depends(verify_admin_api_key)):
+    """Clear conversation-related runtime caches used by chat flows."""
+    query_rewriter_result, llm_cache_result = await asyncio.gather(
+        clear_query_rewriter_cache(),
+        clear_llm_cache(),
+    )
+    return {
+        "status": "ok",
+        "message": "Conversation cache refreshed",
+        "query_rewriter": query_rewriter_result,
+        "llm_cache": llm_cache_result,
+    }
 
 
 @router.post("/config/auto-generate-from-domain", response_model=AutoGenerateBrandingResponse)

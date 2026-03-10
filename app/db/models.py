@@ -227,6 +227,56 @@ class Intent(Base):
     )
 
 
+class UserRole(str, Enum):
+    """User role for internal admin console."""
+
+    ADMIN = "admin"
+    USER = "user"
+
+
+class User(Base):
+    """Internal user for admin console. Password hashed with bcrypt."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    username: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    email: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default=UserRole.USER.value)
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    api_tokens: Mapped[list["ApiToken"]] = relationship(
+        "ApiToken", back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class ApiToken(Base):
+    """API token for programmatic access. Stored as hash; plain token shown once on create."""
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    token_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    scopes: Mapped[str] = mapped_column(String(256), nullable=False, default="api")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    user: Mapped["User"] = relationship("User", back_populates="api_tokens")
+
+    __table_args__ = (Index("ix_api_tokens_token_hash", "token_hash"),)
+
+
 class Ticket(Base):
     """Support ticket (source: WHMCS crawl). Stored in DB. Ingest to file only approved."""
 

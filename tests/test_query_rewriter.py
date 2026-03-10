@@ -10,6 +10,7 @@ from app.services.query_rewriter import (
     _cache_key,
     _serialize_result,
     _deserialize_result,
+    clear_cache,
 )
 
 
@@ -122,3 +123,32 @@ async def test_rewrite_for_retrieval_llm_fallback_on_error(monkeypatch):
     assert result.keyword_query == "refund policy"
     assert result.semantic_query == "refund policy"
     assert result.retrieval_profile == "generic_profile"
+
+
+@pytest.mark.asyncio
+async def test_clear_cache_deletes_query_rewriter_namespace(monkeypatch):
+    class FakeRedis:
+        def __init__(self):
+            self.closed = False
+
+        async def keys(self, pattern):
+            assert pattern == "query_rewriter:*"
+            return ["query_rewriter:a", "query_rewriter:b"]
+
+        async def delete(self, *keys):
+            assert keys == ("query_rewriter:a", "query_rewriter:b")
+            return 2
+
+        async def close(self):
+            self.closed = True
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr(
+        "app.services.query_rewriter.get_settings",
+        lambda: type("S", (), {"query_rewriter_cache_enabled": True, "redis_url": "redis://localhost:6379/0"})(),
+    )
+    with patch("redis.asyncio.from_url", return_value=fake_redis):
+        result = await clear_cache()
+
+    assert result == {"enabled": True, "deleted_keys": 2}
+    assert fake_redis.closed is True

@@ -125,7 +125,7 @@ def test_apply_answer_plan_bounds_pass_weak_output():
         DecisionResult(
             decision="PASS",
             reason="partial_sufficient",
-            clarifying_questions=[],
+            clarifying_questions=["Which region do you prefer?"],
             partial_links=[],
             answer_policy="bounded",
             lane="PASS_WEAK",
@@ -145,6 +145,36 @@ def test_apply_answer_plan_bounds_pass_weak_output():
     )
 
     assert decision == "PASS"
-    assert followup == []
+    assert followup == ["Which plan do you want?"]
     assert confidence == 0.6
     assert "still unverified" in answer.lower()
+
+
+def test_apply_answer_plan_uses_router_followup_for_pass_weak_when_llm_omits_it():
+    plan = build_answer_plan(
+        DecisionResult(
+            decision="PASS",
+            reason="answerable_with_refinement",
+            clarifying_questions=["What budget range works for you?"],
+            partial_links=[],
+            answer_policy="bounded",
+            lane="PASS_WEAK",
+        ),
+        None,
+        None,
+    )
+
+    decision, answer, followup, confidence = apply_answer_plan(
+        plan,
+        {
+            "decision": "PASS",
+            "answer": "A good starting point is 4 GB RAM and 2 vCPU.",
+            "followup_questions": [],
+            "confidence": 0.8,
+        },
+    )
+
+    assert decision == "PASS"
+    assert "starting point" in answer
+    assert followup == ["What budget range works for you?"]
+    assert confidence == 0.6

@@ -7,8 +7,8 @@ from app.services.orchestrator import OrchestratorContext, PhaseResult
 
 async def execute_assess_evidence(ctx: OrchestratorContext) -> PhaseResult:
     """Run quality gate on retrieved evidence. LLM evaluates; no rule-based logic."""
-    required_evidence = ctx.extra.get("required_evidence", [])
-    hard_requirements = ctx.extra.get("hard_requirements", [])
+    required_evidence = ctx.extra.get("active_required_evidence") or ctx.extra.get("required_evidence", [])
+    hard_requirements = ctx.extra.get("active_hard_requirements") or ctx.extra.get("hard_requirements", [])
     product_type = ""
     if ctx.query_spec and getattr(ctx.query_spec, "resolved_slots", None):
         product_type = str((ctx.query_spec.resolved_slots or {}).get("product_type", "")).strip()
@@ -36,8 +36,15 @@ async def execute_assess_evidence(ctx: OrchestratorContext) -> PhaseResult:
         quality_score=quality_report.quality_score,
         missing_signals=quality_report.missing_signals,
         hard_requirement_coverage=quality_report.hard_requirement_coverage,
+        active_hypothesis=ctx.extra.get("active_hypothesis_name"),
         trace_id=ctx.trace_id,
     )
+    history = list(ctx.extra.get("hypothesis_history", []))
+    if history:
+        history[-1]["quality_score"] = quality_report.quality_score
+        history[-1]["gate_pass"] = gate_passed
+        history[-1]["reason"] = quality_report.reason
+        ctx.extra["hypothesis_history"] = history
     return PhaseResult(
         quality_report=quality_report,
         passes_quality_gate=gate_passed,

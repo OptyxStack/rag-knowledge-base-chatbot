@@ -47,6 +47,13 @@ _NOTI_SUBJECT_PREFIXES = (
     "having an issue with hard drive on server:",
     "ipmi sel alert:",
     "??? ipmi sel alert:",
+    "raid warning",
+    "[ blackholes",
+    "[RunningLow]",
+    "[SpamCop ",
+    "Abuse report",
+    
+
 )
 
 # Subject contains = NOTI (e.g. Re: Invoice Payment Reminder)
@@ -147,7 +154,7 @@ def _save_skipped_id(tid: str, existing: set[str]) -> None:
 class WHMCSConfig:
     """Config for WHMCS crawler."""
 
-    base_url: str = "https://greencloudvps.com/billing/greenvps"
+    base_url: str = ""  # Set via env WHMCS_BASE_URL or request body
     list_path: str = "supporttickets.php?filter=1"
     login_path: str = "login.php"
     username: str | None = None

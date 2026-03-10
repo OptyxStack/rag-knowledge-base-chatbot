@@ -63,7 +63,7 @@ def parse_llm_response(content: str) -> dict[str, Any]:
         logger.warning("llm_json_parse_failed", error=str(e), content_preview=content[:200])
         return {
             "decision": "ASK_USER",
-            "answer": content[:500] if content else "I couldn't format my response properly. Could you rephrase your question?",
+            "answer": content[:500] if content else "We had trouble formatting the response. Could you rephrase your question?",
             "followup_questions": ["Could you provide more details about your question?"],
             "citations": [],
             "confidence": 0.0,
@@ -130,9 +130,15 @@ def build_answer_plan(
             tone_policy="cautious",
             generation_constraints={
                 "confidence_cap": 0.6,
+                "max_followup_questions": 1,
+                "default_followup_questions": (
+                    (decision_router.clarifying_questions or [])[:1]
+                    if decision_router
+                    else []
+                ),
                 "bounded_suffix": (
-                    "I only confirmed the details above from the available evidence. "
-                    "Some requested specifics are still unverified."
+                    "We've confirmed the details above from our documentation. "
+                    "Some specifics are still unverified."
                 ),
             },
         )
@@ -173,6 +179,7 @@ def format_answer_plan_instruction(
             "Answer only with facts explicitly supported by the evidence.",
             "Explicitly say which requested details are not confirmed in the evidence.",
             "Keep the answer concise and cautious.",
+            "Include at most one short follow-up question only if it helps refine the next answer.",
         ]
         if quality_report and quality_report.missing_signals:
             lines.append(
@@ -218,7 +225,18 @@ def apply_answer_plan(
     if answer_plan.lane == "PASS_WEAK" and answer.strip():
         if decision != "ESCALATE":
             decision = "PASS"
-        followup = []
+        max_followup = constraints.get("max_followup_questions", 0)
+        if isinstance(max_followup, int) and max_followup >= 0:
+            followup = followup[:max_followup]
+        default_followup = constraints.get("default_followup_questions", [])
+        if not followup and isinstance(default_followup, list):
+            followup = [
+                str(item).strip()
+                for item in default_followup
+                if isinstance(item, str) and str(item).strip()
+            ]
+            if isinstance(max_followup, int) and max_followup >= 0:
+                followup = followup[:max_followup]
 
         bounded_suffix = str(constraints.get("bounded_suffix", "")).strip()
         lower_answer = answer.lower()

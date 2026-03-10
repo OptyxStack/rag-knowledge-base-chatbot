@@ -8,8 +8,6 @@ from app.core.config import get_settings
 from app.services.flow_debug import _pipeline_log
 from app.core.logging import get_logger
 from app.services.branding_config import match_intent
-from app.services.decision_router import route as decision_route
-from app.services.flow_debug import build_flow_debug
 from app.services.llm_config import get_llm_fallback_model, get_llm_model
 from app.services.llm_gateway import LLMGateway, get_llm_gateway
 from app.services.orchestrator import (
@@ -122,41 +120,6 @@ class AnswerService:
                 debug={"trace_id": trace_id, "skip_retrieval": True},
             )
 
-        if (
-            query_spec
-            and query_spec.is_ambiguous
-            and getattr(self._settings, "decision_router_enabled", True)
-        ):
-            _pipeline_log("answer_service", "ambiguous_query", intent="ambiguous", trace_id=trace_id)
-            dr = decision_route(query_spec, None, [], [], True)
-            from app.core.metrics import compute_message_cost
-            usage_list = llm_usage_var.get() or []
-            cost_usd, agg_tokens, breakdown = compute_message_cost(usage_list)
-            from app.core.tracing import llm_call_log_var
-            llm_call_log = llm_call_log_var.get() or []
-            debug = build_flow_debug(
-                trace_id=trace_id,
-                evidence_pack=None,
-                evidence=[],
-                messages=[],
-                model_used=self._orchestrator.get_model_for_query(query),
-                llm_tokens=agg_tokens if (agg_tokens["input"] or agg_tokens["output"]) else None,
-                cost_usd=cost_usd if cost_usd > 0 else None,
-                llm_usage_breakdown=breakdown if breakdown else None,
-                llm_call_log=llm_call_log if llm_call_log else None,
-                query_spec=query_spec,
-                decision_router=dr,
-                source_lang=source_lang,
-            )
-            return AnswerOutput(
-                decision=dr.decision,
-                answer=dr.answer,
-                followup_questions=dr.clarifying_questions,
-                citations=[],
-                confidence=0.0,
-                debug=debug,
-            )
-
         required_evidence = (
             query_spec.required_evidence if query_spec else []
         )
@@ -166,13 +129,16 @@ class AnswerService:
             else []
         )
 
-        max_attempts = self._settings.max_retrieval_attempts
+        fallback_hypothesis_count = len(getattr(query_spec, "fallback_hypotheses", None) or []) if query_spec else 0
+        max_attempts = max(self._settings.max_retrieval_attempts, 1 + fallback_hypothesis_count)
         _pipeline_log(
             "answer_service", "context_created",
             intent=getattr(query_spec, "intent", ""),
             user_goal=getattr(query_spec, "user_goal", ""),
             required_evidence=required_evidence,
             hard_requirements=hard_requirements,
+            evidence_families=getattr(query_spec, "evidence_families", []),
+            answer_shape=getattr(query_spec, "answer_shape", "direct_lookup"),
             effective_query=effective_query[:80],
             trace_id=trace_id,
         )
@@ -188,6 +154,7 @@ class AnswerService:
             extra={
                 "required_evidence": required_evidence,
                 "hard_requirements": hard_requirements,
+                "primary_hypothesis_name": getattr(getattr(query_spec, "primary_hypothesis", None), "name", "primary") if query_spec else "primary",
             },
         )
 

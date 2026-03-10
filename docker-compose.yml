@@ -3,12 +3,13 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_KEY: ${API_KEY:-}
+        VITE_ADMIN_API_KEY: ${ADMIN_API_KEY:-}
     ports:
       - "5174:80"
     depends_on:
       - api
-    environment:
-      - VITE_API_KEY=${API_KEY:-dev-key}
 
   nginx:
     image: nginx:alpine
@@ -33,6 +34,7 @@ services:
       - ./source:/app/source
     environment:
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - PLAYWRIGHT_INSTALL_ON_STARTUP=false
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/support_ai
       - DATABASE_URL_SYNC=postgresql://postgres:postgres@postgres:5432/support_ai
       - REDIS_URL=redis://redis:6379/0
@@ -44,8 +46,9 @@ services:
       - LLM_MODEL=${LLM_MODEL:-gpt-5.2}
       - RERANKER_PROVIDER=${RERANKER_PROVIDER:-custom}
       - LLM_MAX_TOKENS=2048
-      - API_KEY=${API_KEY:-dev-key}
-      - ADMIN_API_KEY=${ADMIN_API_KEY:-admin-key}
+      - API_KEY=${API_KEY:-}
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env}
       - OBJECT_STORAGE_URL=http://minio:9000
       - OBJECT_STORAGE_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - OBJECT_STORAGE_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
@@ -66,6 +69,7 @@ services:
     image: support-ai-assistant:local
     environment:
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - PLAYWRIGHT_INSTALL_ON_STARTUP=false
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/support_ai
       - DATABASE_URL_SYNC=postgresql://postgres:postgres@postgres:5432/support_ai
       - REDIS_URL=redis://redis:6379/0
@@ -75,6 +79,9 @@ services:
       - QDRANT_PORT=6333
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - RERANKER_PROVIDER=${RERANKER_PROVIDER:-custom}
+      - API_KEY=${API_KEY:-}
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env}
       - OBJECT_STORAGE_URL=http://minio:9000
       - OBJECT_STORAGE_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - OBJECT_STORAGE_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
@@ -90,7 +97,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: support_ai
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -103,7 +110,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6380:6379"  # Use 6380 on host to avoid Windows port 6379 exclusion
+      - "127.0.0.1:6380:6379"  # Use 6380 on host to avoid Windows port 6379 exclusion
     volumes:
       - redis_data:/data
 
@@ -111,12 +118,12 @@ services:
     image: opensearchproject/opensearch:2.11.0
     environment:
       - discovery.type=single-node
-      - bootstrap.memory_lock=true
-      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - bootstrap.memory_lock=false
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
       - plugins.security.disabled=true
     ports:
-      - "9200:9200"
-      - "9600:9600"
+      - "127.0.0.1:9200:9200"
+      - "127.0.0.1:9600:9600"
     volumes:
       - opensearch_data:/usr/share/opensearch/data
     healthcheck:
@@ -129,15 +136,15 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.12.0  # v1.10+ required for query_points API (Python client)
     ports:
-      - "6333:6333"
+      - "127.0.0.1:6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
@@ -146,13 +153,13 @@ services:
     command: server /data --console-address ":9001"
 
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     depends_on:
       - minio
     entrypoint: >
       /bin/sh -c "
       sleep 5;
-      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc alias set myminio http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-minioadmin};
       mc mb myminio/support-ai-docs --ignore-existing;
       exit 0;
       "

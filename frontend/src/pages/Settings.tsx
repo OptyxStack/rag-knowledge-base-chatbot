@@ -9,6 +9,7 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [savingArchi, setSavingArchi] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [refreshingConversationCache, setRefreshingConversationCache] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
@@ -121,6 +122,25 @@ export default function Settings() {
     }
   }
 
+  const handleRefreshConversationCache = async () => {
+    setError(null)
+    setSuccess(null)
+    setRefreshingConversationCache(true)
+    try {
+      const res = await admin.refreshConversationCache()
+      const queryRewriterSummary = res.query_rewriter.enabled
+        ? `${res.query_rewriter.deleted_keys} query rewrite keys`
+        : 'query rewrite cache disabled'
+      setSuccess(
+        `Conversation cache refreshed: ${queryRewriterSummary}, ${res.llm_cache.deleted_keys} LLM cache keys.`
+      )
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to refresh conversation cache')
+    } finally {
+      setRefreshingConversationCache(false)
+    }
+  }
+
   const handleSaveArchi = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
@@ -173,7 +193,7 @@ export default function Settings() {
       const promptData = await admin.getSystemPrompt()
       setSystemPrompt(promptData.value)
       setSuccess(
-        `Đã tạo từ ${autoGenUrl}. Domain: ${res.prompt_domain}${res.app_name ? `, App: ${res.app_name}` : ''}. Đã lưu vào DB.`
+        `Generated from ${autoGenUrl}. Domain: ${res.prompt_domain}${res.app_name ? `, App: ${res.app_name}` : ''}. Saved to DB.`
       )
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Auto-generate failed')
@@ -317,20 +337,44 @@ export default function Settings() {
       <section className="glass rounded-2xl p-6">
         <h2 className="text-lg font-semibold text-white flex items-center gap-2.5 mb-5">
           <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center">
+            <RefreshCw size={15} className="text-violet-400" />
+          </div>
+          Conversation Cache
+        </h2>
+        <p className="text-sm text-zinc-400 mb-5">
+          Clear cached query rewrites and cached LLM responses that can affect conversation behavior after prompt or retrieval changes.
+        </p>
+        <button
+          type="button"
+          onClick={handleRefreshConversationCache}
+          disabled={refreshingConversationCache}
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{
+            background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
+          }}
+        >
+          {refreshingConversationCache ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+          Refresh Conversation Cache
+        </button>
+      </section>
+
+      <section className="glass rounded-2xl p-6">
+        <h2 className="text-lg font-semibold text-white flex items-center gap-2.5 mb-5">
+          <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center">
             <FileText size={15} className="text-violet-400" />
           </div>
           System Prompt
         </h2>
         <p className="text-sm text-zinc-400 mb-5">
-          System prompt gửi tới LLM khi tạo câu trả lời. Chỉnh sửa để tùy chỉnh hành vi chatbot. Lưu trong DB, cache được refresh sau khi lưu.
+          System prompt sent to LLM when generating responses. Edit to customize chatbot behavior. Stored in DB, cache is refreshed after save.
         </p>
         <div className="mb-5 p-4 rounded-xl bg-violet-500/5 border border-violet-500/20">
           <div className="flex items-center gap-2 mb-2">
             <Globe size={16} className="text-violet-400" />
-            <span className="text-sm font-medium text-violet-200">Auto-generate từ domain</span>
+            <span className="text-sm font-medium text-violet-200">Auto-generate from domain</span>
           </div>
           <p className="text-xs text-zinc-500 mb-3">
-            Nhập URL website, AI sẽ crawl và tạo persona, domain preset, custom rules rồi lưu vào DB.
+            Enter a website URL, AI will crawl and generate persona, domain preset, custom rules, then save to DB.
           </p>
           <div className="flex gap-2">
             <input
@@ -348,7 +392,7 @@ export default function Settings() {
               className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-white bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {autoGenLoading ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-              {autoGenLoading ? 'Đang tạo...' : 'Tạo từ URL'}
+              {autoGenLoading ? 'Generating...' : 'Generate from URL'}
             </button>
           </div>
         </div>

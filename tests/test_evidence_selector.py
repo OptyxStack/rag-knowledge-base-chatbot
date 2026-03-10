@@ -115,3 +115,28 @@ async def test_select_evidence_llm_invalid_ids_fallback(monkeypatch):
             result = await select_evidence_for_query("query", chunks, top_k_fallback=2)
     assert len(result.selected) == 2  # fallback
     assert result.used_llm is True  # LLM was called but returned invalid
+
+
+@pytest.mark.asyncio
+async def test_select_evidence_validates_policy_language_mapping(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.evidence_selector.get_settings",
+        lambda: type(
+            "S",
+            (),
+            {"evidence_selector_use_llm": True, "reviewer_policy_doc_types": ["policy", "tos"]},
+        )(),
+    )
+    chunks = [
+        (_make_chunk("c1", doc_type="faq"), 0.9),
+        (_make_chunk("c2", doc_type="policy"), 0.8),
+    ]
+    mock_resp = type("R", (), {
+        "content": '{"selected_chunk_ids": ["c1", "c2"], "coverage_map": {"policy_language": "c1"}, "uncovered_requirements": [], "reasoning": "picked faq"}',
+    })()
+    with patch("app.services.evidence_selector.get_llm_gateway") as mock_gw:
+        mock_gw.return_value.chat = AsyncMock(return_value=mock_resp)
+        with patch("app.services.evidence_selector.get_model_for_task", return_value="gpt-4o-mini"):
+            result = await select_evidence_for_query("query", chunks, required_evidence=["policy_language"])
+    assert result.coverage_map == {}
+    assert result.uncovered_requirements == ["policy_language"]

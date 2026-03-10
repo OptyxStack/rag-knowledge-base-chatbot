@@ -31,6 +31,7 @@ services:
     environment:
       - WATCHFILES_FORCE_POLLING=true
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - PLAYWRIGHT_INSTALL_ON_STARTUP=false
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/support_ai
       - DATABASE_URL_SYNC=postgresql://postgres:postgres@postgres:5432/support_ai
       - REDIS_URL=redis://redis:6379/0
@@ -41,6 +42,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - API_KEY=${API_KEY:-dev-key}
       - ADMIN_API_KEY=${ADMIN_API_KEY:-admin-key}
+      - JWT_SECRET=${JWT_SECRET:-dev-jwt-secret-change-me}
       # Hybrid normalizer profile: generic default.
       # For legacy compatibility, override these in `.env` with:
       # NORMALIZER_DOMAIN_TERMS=vps,dedicated,server,windows,linux,kvm,macos,pricing,plan,plans,nvme,bandwidth,ram,cpu,vds,epyc,xeon,product,order,account,refund
@@ -66,6 +68,8 @@ services:
     volumes:
       - ./:/app
     environment:
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - PLAYWRIGHT_INSTALL_ON_STARTUP=false
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/support_ai
       - DATABASE_URL_SYNC=postgresql://postgres:postgres@postgres:5432/support_ai
       - REDIS_URL=redis://redis:6379/0
@@ -74,6 +78,9 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - API_KEY=${API_KEY:-dev-key}
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-admin-key}
+      - JWT_SECRET=${JWT_SECRET:-dev-jwt-secret-change-me}
       - NORMALIZER_DOMAIN_TERMS=${NORMALIZER_DOMAIN_TERMS:-}
       - NORMALIZER_QUERY_EXPANSION=${NORMALIZER_QUERY_EXPANSION:-false}
       - NORMALIZER_SLOTS_ENABLED=${NORMALIZER_SLOTS_ENABLED:-false}

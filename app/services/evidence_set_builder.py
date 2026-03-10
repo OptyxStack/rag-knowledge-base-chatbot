@@ -50,6 +50,24 @@ def _chunk_satisfies_requirement(chunk: SearchChunk, req: str) -> bool:
     return False
 
 
+def _coverage_mapping_allowed(chunk: SearchChunk, req: str) -> bool:
+    req_key = (req or "").strip().lower()
+    doc_type = (chunk.doc_type or "").strip().lower()
+    settings = get_settings()
+    if req_key == "policy_language":
+        configured_policy_types = {
+            str(t).strip().lower()
+            for t in (settings.reviewer_policy_doc_types or [])
+            if str(t).strip()
+        }
+        if configured_policy_types:
+            return doc_type in configured_policy_types
+        return doc_type in {"policy", "tos"}
+    if req_key == "steps_structure":
+        return doc_type in {"howto", "docs", "faq", "conversation"}
+    return req_key in {"numbers_units", "transaction_link", "has_any_url"}
+
+
 def build_evidence_set(
     reranked: list[tuple[SearchChunk, float]],
     query_spec: QuerySpec | None,
@@ -88,6 +106,18 @@ def build_evidence_set(
     covered_req: set[str] = set()
     covered_slots: set[str] = set()
     chunk_ids_in_reranked = {c.chunk_id for c, _ in reranked}
+    chunk_by_id = {c.chunk_id: c for c, _ in reranked}
+    validated_coverage_map: dict[str, str] = {}
+    if coverage_map:
+        for req, cid in coverage_map.items():
+            chunk = chunk_by_id.get(cid)
+            if not chunk:
+                continue
+            if req not in (hard | soft):
+                continue
+            if not _coverage_mapping_allowed(chunk, req):
+                continue
+            validated_coverage_map[req] = cid
 
     for chunk, score in reranked:
         snippet = (chunk.chunk_text or "")[:500]
@@ -103,8 +133,8 @@ def build_evidence_set(
         )
         evidence_chunks.append(ec)
 
-        if coverage_map:
-            for req, cid in coverage_map.items():
+        if validated_coverage_map:
+            for req, cid in validated_coverage_map.items():
                 if cid == chunk.chunk_id and req in (hard | soft):
                     covered_req.add(req)
         else:
@@ -120,9 +150,9 @@ def build_evidence_set(
     uncovered_slots = slot_names - covered_slots
 
     # Primary: from coverage_map when available, else first 3 by rank
-    if coverage_map:
+    if validated_coverage_map:
         coverage_primary = [
-            cid for req, cid in coverage_map.items()
+            cid for req, cid in validated_coverage_map.items()
             if cid in chunk_ids_in_reranked
         ]
         primary_ids = list(dict.fromkeys(coverage_primary))

@@ -39,7 +39,8 @@ DOMAIN RULES (support / plans / pricing):
 - When the user asks about plans, products, or pricing: ALWAYS include (1) plan names, (2) prices/specs, and (3) the actual links (source_url or order_link from evidence). Format like: "Plan X: $Y – [link]". Do not give a generic answer without links.
 - If the evidence only partially answers the question, provide a bounded partial answer with decision set to PASS. Clearly separate confirmed details from unverified details. Use ASK_USER only when no safe bounded answer can be given.
 - Use the evidence. When evidence contains information relevant to the query—policy, terms, eligibility, exclusions, steps, specs, links—extract, quote, or paraphrase it. Do not say "I cannot provide", "please refer to", or "contact support" when the answer is already in the evidence. Answer from the evidence.
-- ESCALATE only when evidence is empty or clearly irrelevant. ASK_USER only when the query is ambiguous or evidence is insufficient and no safe partial answer exists. When evidence has usable content, answer from it."""
+- ESCALATE only when evidence is empty or clearly irrelevant. ASK_USER only when the query is ambiguous or evidence is insufficient and no safe partial answer exists. When evidence has usable content, answer from it.
+- TONE: Speak as part of the company—use "we", "our", "us". Avoid third-person or detached phrasing (e.g. "The evidence says" → "Based on our documentation, we offer..."; "Yes—according to the Terms of Service" → "Yes—our Terms of Service allow..."). Be helpful and direct, as if you belong to the support team."""
 
 DOMAIN_LEGAL = """
 DOMAIN RULES (legal / policy):
@@ -69,14 +70,17 @@ OUTPUT SCHEMA (JSON):
 Evidence chunks will be provided in the user message."""
 
 # Legacy fallback (full prompt) for backward compat when DB has no layered config
-FALLBACK_SYSTEM_PROMPT = "You are a support assistant.\n\n" + CORE_RULES + DOMAIN_SUPPORT + OUTPUT_SCHEMA
+FALLBACK_SYSTEM_PROMPT = (
+    "You are a support assistant speaking on behalf of the company. Use 'we', 'our', and 'us'—you belong to the team.\n\n"
+    + CORE_RULES + DOMAIN_SUPPORT + OUTPUT_SCHEMA
+)
 
 LANE_AWARE_PROMPT_SUFFIX = """
 
 INTERNAL ROUTING NOTES:
 - The runtime may route the answer as PASS_STRONG or PASS_WEAK.
 - PASS_WEAK is a bounded-answer lane. In JSON output, still use decision="PASS".
-- For PASS_WEAK style answers, state only confirmed details, explicitly name what is not verified, and avoid follow-up questions unless no safe partial answer exists.
+- For PASS_WEAK style answers, state only confirmed details, explicitly name what is not verified, and include at most one short follow-up question when it would help refine the next answer.
 """
 
 def _get_fallback_intents() -> list[tuple[str, str, str]]:
@@ -185,7 +189,7 @@ async def _load_from_db(session: AsyncSession) -> tuple[dict[str, Any], list[tup
     )
 
     return {
-        "persona": persona or "You are a support assistant.",
+        "persona": persona or "You are a support assistant speaking on behalf of the company. Use 'we', 'our', and 'us' when referring to the service—you belong to the team.",
         "prompt_domain": domain,
         "custom_prompt_rules": custom_prompt_rules,
         "use_legacy_full_prompt": is_legacy_full,
@@ -223,7 +227,7 @@ def get_system_prompt() -> str:
         domain = domain or getattr(get_settings(), "prompt_domain", "support")
         if domain not in ("support", "legal", "generic"):
             domain = "support"
-        persona = persona or "You are a support assistant."
+        persona = persona or "You are a support assistant speaking on behalf of the company. Use 'we', 'our', and 'us' when referring to the service—you belong to the team."
         prompt = _build_layered_prompt(persona, domain, custom_rules)
 
     if "PASS_WEAK is a bounded-answer lane" not in prompt:

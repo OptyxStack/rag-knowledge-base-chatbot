@@ -62,13 +62,10 @@ class RetrievalService:
         bm25_chunks: list[SearchChunk],
         vector_chunks: list[SearchChunk],
     ) -> list[SearchChunk]:
-        """Merge and dedupe by chunk_id. Prefer higher score when duplicate. Boost conversation chunks."""
+        """Merge and dedupe by chunk_id. Prefer higher score when duplicate."""
         seen: dict[str, SearchChunk] = {}
-        conv_boost = 1.5
         for c in bm25_chunks + vector_chunks:
             score = c.score or 0.0
-            if (c.doc_type or "").lower() == "conversation":
-                score *= conv_boost
             if c.chunk_id not in seen or score > (seen[c.chunk_id].score or 0):
                 seen[c.chunk_id] = SearchChunk(
                     chunk_id=c.chunk_id,
@@ -100,12 +97,6 @@ class RetrievalService:
         for rank, c in enumerate(vector_chunks, start=1):
             rrf_scores[c.chunk_id] = rrf_scores.get(c.chunk_id, 0.0) + 1.0 / (k + rank)
             chunk_by_id[c.chunk_id] = c
-
-        # Boost conversation chunks (sample tickets) so they rank higher
-        conv_boost = 1.5
-        for cid, c in chunk_by_id.items():
-            if (c.doc_type or "").lower() == "conversation":
-                rrf_scores[cid] = rrf_scores.get(cid, 0.0) * conv_boost
 
         # Sort by RRF score descending, return chunks with updated score for downstream
         sorted_ids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
@@ -168,6 +159,60 @@ class RetrievalService:
             plan_used=plan,
         )
 
+    @staticmethod
+    def _split_primary_and_secondary_doc_types(
+        doc_types: list[str] | None,
+        preferred_sources: list[str] | None,
+    ) -> tuple[list[str] | None, bool]:
+        requested = [str(d).strip() for d in (doc_types or []) if str(d).strip()]
+        wants_conversation = "conversation" in {
+            str(s).strip().lower() for s in (preferred_sources or []) if str(s).strip()
+        }
+        if not requested:
+            return None, wants_conversation
+        non_conversation = [d for d in requested if d.lower() != "conversation"]
+        if wants_conversation and non_conversation:
+            return non_conversation, True
+        return requested, wants_conversation or ("conversation" in {d.lower() for d in requested})
+
+    @staticmethod
+    def _dedupe_chunks(chunks: list[SearchChunk]) -> list[SearchChunk]:
+        seen: dict[str, SearchChunk] = {}
+        for chunk in chunks:
+            if chunk.chunk_id not in seen or (chunk.score or 0.0) > (seen[chunk.chunk_id].score or 0.0):
+                seen[chunk.chunk_id] = chunk
+        return list(seen.values())
+
+    @staticmethod
+    def _retain_supporting_conversation_chunk(
+        selected: list[tuple[SearchChunk, float]],
+        candidates: list[tuple[SearchChunk, float]],
+        *,
+        max_items: int,
+    ) -> list[tuple[SearchChunk, float]]:
+        if not candidates:
+            return selected
+        if any((chunk.doc_type or "").lower() == "conversation" for chunk, _ in selected):
+            return selected
+        conversation_candidate = next(
+            ((chunk, score) for chunk, score in candidates if (chunk.doc_type or "").lower() == "conversation"),
+            None,
+        )
+        if conversation_candidate is None:
+            return selected
+        updated = list(selected)
+        updated.append(conversation_candidate)
+        if len(updated) <= max_items:
+            return updated
+        non_conversation = [
+            (idx, item) for idx, item in enumerate(updated)
+            if (item[0].doc_type or "").lower() != "conversation"
+        ]
+        if not non_conversation:
+            return updated[:max_items]
+        remove_idx = min(non_conversation, key=lambda entry: entry[1][1])[0]
+        return [item for idx, item in enumerate(updated) if idx != remove_idx][:max_items]
+
     async def retrieve(
         self,
         query: str,
@@ -184,7 +229,7 @@ class RetrievalService:
         effective_query = (
             retry_strategy.suggested_query if retry_strategy and retry_strategy.suggested_query else query
         )
-        effective_query_spec = None if (retry_strategy and retry_strategy.suggested_query) else query_spec
+        effective_query_spec = query_spec
         requested_doc_types = doc_types
 
         planning_debug: dict[str, Any] = {}
@@ -225,6 +270,19 @@ class RetrievalService:
         effective_doc_types = requested_doc_types or plan.preferred_doc_types
         if retry_strategy and retry_strategy.filter_doc_types:
             effective_doc_types = retry_strategy.filter_doc_types
+        preferred_sources = list(plan.preferred_sources or [])
+        primary_doc_types, include_conversation_source = self._split_primary_and_secondary_doc_types(
+            effective_doc_types,
+            preferred_sources,
+        )
+        authoritative_doc_types = [
+            str(x).strip() for x in (plan.authoritative_doc_types or primary_doc_types or []) if str(x).strip()
+        ]
+        supporting_doc_types = [
+            str(x).strip() for x in (plan.supporting_doc_types or []) if str(x).strip()
+        ]
+        if include_conversation_source and "conversation" not in supporting_doc_types:
+            supporting_doc_types.append("conversation")
 
         fetch_n = plan.fetch_n or top_n or self._settings.retrieval_top_n
         rerank_k = plan.rerank_k or top_k or self._settings.retrieval_top_k
@@ -244,7 +302,7 @@ class RetrievalService:
         bm25_chunks = await self._opensearch.search(
             query=qr.keyword_query,
             top_n=fetch_n,
-            doc_types=effective_doc_types,
+            doc_types=authoritative_doc_types or primary_doc_types,
             boost_pricing=is_pricing_retrieval or bool(retry_strategy and retry_strategy.boost_patterns),
             prefer_snippet=False,
         )
@@ -266,16 +324,39 @@ class RetrievalService:
             self._qdrant.search,
             vector=vectors[0],
             top_n=fetch_n,
-            doc_types=effective_doc_types,
+            doc_types=authoritative_doc_types or primary_doc_types,
         )
         vector_ids = {c.chunk_id for c in vector_chunks}
 
+        supporting_bm25: list[SearchChunk] = []
+        supporting_vector: list[SearchChunk] = []
+        if supporting_doc_types and supporting_doc_types != authoritative_doc_types:
+            supporting_bm25 = await self._opensearch.search(
+                query=qr.keyword_query,
+                top_n=max(8, min(fetch_n // 2, 20)),
+                doc_types=supporting_doc_types,
+                boost_pricing=False,
+                prefer_snippet=False,
+            )
+            supporting_vector = await asyncio.to_thread(
+                self._qdrant.search,
+                vector=vectors[0],
+                top_n=max(8, min(fetch_n // 2, 20)),
+                doc_types=supporting_doc_types,
+            )
+            extra_ids.update(c.chunk_id for c in supporting_bm25 + supporting_vector)
+
         if self._settings.retrieval_fusion == "rrf":
             merged = self._merge_with_rrf(
-                bm25_chunks, vector_chunks, k=self._settings.retrieval_rrf_k
+                self._dedupe_chunks(bm25_chunks + supporting_bm25),
+                self._dedupe_chunks(vector_chunks + supporting_vector),
+                k=self._settings.retrieval_rrf_k,
             )
         else:
-            merged = self._merge_simple(bm25_chunks, vector_chunks)
+            merged = self._merge_simple(
+                self._dedupe_chunks(bm25_chunks + supporting_bm25),
+                self._dedupe_chunks(vector_chunks + supporting_vector),
+            )
 
         if extra_bm25:
             seen_ids = {c.chunk_id for c in merged}
@@ -299,9 +380,13 @@ class RetrievalService:
         stats: dict[str, Any] = {
             "bm25_count": len(bm25_chunks),
             "vector_count": len(vector_chunks),
+            "supporting_bm25_count": len(supporting_bm25),
+            "supporting_vector_count": len(supporting_vector),
             "merged_count": len(merged),
             "fusion": self._settings.retrieval_fusion,
             "retrieval_profile": profile,
+            "active_hypothesis": plan.active_hypothesis_name,
+            "evidence_families": list(plan.evidence_families or []),
             "query_rewrite": {"keyword_query": qr.keyword_query, "semantic_query": qr.semantic_query},
             "attempt": attempt,
             "plan_reason": plan.reason,
@@ -310,6 +395,14 @@ class RetrievalService:
         }
         if hard_requirements:
             stats["hard_requirements"] = sorted(hard_requirements)
+        if primary_doc_types:
+            stats["primary_doc_types"] = primary_doc_types
+        if authoritative_doc_types:
+            stats["authoritative_doc_types"] = authoritative_doc_types
+        if supporting_doc_types:
+            stats["supporting_doc_types"] = supporting_doc_types
+        if preferred_sources:
+            stats["preferred_sources"] = preferred_sources
         if effective_query_spec and getattr(effective_query_spec, "rewrite_candidates", None):
             stats["rewrite_candidates"] = effective_query_spec.rewrite_candidates[:3]
         if retry_strategy:
@@ -362,14 +455,15 @@ class RetrievalService:
                 stats["exclude_patterns_filtered"] = before - len(reranked_search)
 
         # Evidence Selector: coverage-aware selection (Phase 1)
-        required_evidence = []
-        if effective_query_spec:
+        required_evidence = list(plan.active_required_evidence or [])
+        if not required_evidence and effective_query_spec:
             required_evidence = list(
                 getattr(effective_query_spec, "hard_requirements", None)
                 or effective_query_spec.required_evidence
                 or []
             )
         coverage_map: dict[str, str] | None = None
+        selector_candidates = list(reranked_search)
         if self._settings.evidence_selector_use_llm and reranked_search:
             from app.services.evidence_selector import select_evidence_for_query
             product_type = None
@@ -391,6 +485,11 @@ class RetrievalService:
                     "uncovered_requirements": selection.uncovered_requirements[:5],
                     "reasoning": selection.reasoning[:100],
                 }
+        reranked_search = self._retain_supporting_conversation_chunk(
+            reranked_search,
+            selector_candidates,
+            max_items=max(rerank_k, self._settings.evidence_selector_fallback_top_k),
+        )
 
         evidence_set = build_evidence_set(
             reranked_search, effective_query_spec, plan, candidate_pool,

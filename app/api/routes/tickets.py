@@ -17,7 +17,7 @@ async def list_tickets(
     page_size: int = Query(20, ge=1, le=100),
     status: str | None = Query(None, description="Filter by status"),
     approval_status: str | None = Query(None, description="Filter by approval: pending, approved, rejected"),
-    q: str | None = Query(None, description="Search in subject, description"),
+    q: str | None = Query(None, description="Search in id, subject, description, and customer fields"),
     db: AsyncSession = Depends(get_db),
     _auth: str = Depends(verify_api_key),
 ):
@@ -33,8 +33,17 @@ async def list_tickets(
         count_base = count_base.where(Ticket.approval_status == approval_status.strip())
     if q and q.strip():
         search = f"%{q.strip()}%"
-        base = base.where(or_(Ticket.subject.ilike(search), Ticket.description.ilike(search)))
-        count_base = count_base.where(or_(Ticket.subject.ilike(search), Ticket.description.ilike(search)))
+        search_filter = or_(
+            Ticket.external_id.ilike(search),
+            Ticket.subject.ilike(search),
+            Ticket.description.ilike(search),
+            Ticket.email.ilike(search),
+            Ticket.name.ilike(search),
+            Ticket.client_id.ilike(search),
+            Ticket.source_file.ilike(search),
+        )
+        base = base.where(search_filter)
+        count_base = count_base.where(search_filter)
 
     count_result = await db.execute(count_base)
     total = count_result.scalar() or 0
@@ -51,11 +60,13 @@ async def list_tickets(
             "description": (r.description or "")[:500],
             "status": r.status,
             "priority": r.priority,
+            "client_id": r.client_id,
             "email": r.email,
             "name": r.name,
             "approval_status": r.approval_status,
             "metadata": r.ticket_metadata,
             "source_file": r.source_file,
+            "detail_url": (r.ticket_metadata or {}).get("detail_url") if isinstance(r.ticket_metadata, dict) else None,
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "updated_at": r.updated_at.isoformat() if r.updated_at else None,
         }

@@ -27,6 +27,9 @@ def _make_query_spec(
     semantic_queries: list[str] | None = None,
     is_ambiguous: bool = False,
     clarifying_questions: list[str] | None = None,
+    answerable_without_clarification: bool = True,
+    assistant_should_lead: bool = False,
+    refinement_questions: list[str] | None = None,
 ) -> QuerySpec:
     """Build QuerySpec for integration tests."""
     return QuerySpec(
@@ -39,6 +42,9 @@ def _make_query_spec(
         semantic_queries=semantic_queries or ["VPS pricing plans"],
         clarifying_questions=clarifying_questions or [],
         is_ambiguous=is_ambiguous,
+        answerable_without_clarification=answerable_without_clarification,
+        assistant_should_lead=assistant_should_lead,
+        refinement_questions=refinement_questions or [],
         skip_retrieval=False,
         canonical_query_en="What is the VPS pricing?",
         hard_requirements=["numbers_units", "has_any_url"],
@@ -64,6 +70,27 @@ def _make_evidence_chunks() -> list[EvidenceChunk]:
             doc_type="pricing",
             score=0.85,
             full_text="Dedicated servers from $110/month. See https://green.cloud/dedicated.",
+        ),
+    ]
+
+
+def _make_mixed_evidence_chunks() -> list[EvidenceChunk]:
+    return [
+        EvidenceChunk(
+            chunk_id="chunk-price-1",
+            snippet="VPS plans start at $6/month.",
+            source_url="https://green.cloud/pricing",
+            doc_type="pricing",
+            score=0.92,
+            full_text="VPS plans start at $6/month.",
+        ),
+        EvidenceChunk(
+            chunk_id="chunk-conv-1",
+            snippet="Conversation example: customer requested an extra IP and support added it after verification.",
+            source_url="ticket://conversation-1",
+            doc_type="conversation",
+            score=0.87,
+            full_text="Conversation example: customer requested an extra IP and support added it after verification.",
         ),
     ]
 
@@ -320,6 +347,7 @@ async def test_rag_flow_ambiguous_returns_ask_user(mock_normalize, mock_match_in
     mock_normalize.return_value = _make_query_spec(
         is_ambiguous=True,
         clarifying_questions=["What would you like to compare?"],
+        answerable_without_clarification=False,
     )
 
     retrieval = MockRetrievalService()
@@ -340,3 +368,79 @@ async def test_rag_flow_ambiguous_returns_ask_user(mock_normalize, mock_match_in
 
     assert output.decision == "ASK_USER"
     assert len(output.followup_questions) > 0
+
+
+@patch("app.services.answer_service.match_intent")
+@patch("app.services.answer_service.normalize_query")
+@pytest.mark.asyncio
+async def test_rag_flow_answer_then_ask_uses_pass_weak_followup(mock_normalize, mock_match_intent):
+    mock_match_intent.return_value = None
+    mock_normalize.return_value = _make_query_spec(
+        is_ambiguous=True,
+        clarifying_questions=["What budget range works for you?"],
+        answerable_without_clarification=True,
+        assistant_should_lead=True,
+        refinement_questions=["What budget range works for you?"],
+    )
+
+    retrieval = MockRetrievalService()
+    llm = MockLLMGateway(
+        response=_make_llm_response(
+            decision="PASS",
+            answer="A good starting point is a VPS plan from $6/month.",
+            confidence=0.85,
+        )
+    )
+    reviewer = MockReviewerGate()
+
+    svc = AnswerService(
+        retrieval=retrieval,
+        llm=llm,
+        reviewer=reviewer,
+    )
+
+    output = await svc.generate(
+        query="i want some vps for seo tools, can you suggest a plan?",
+        conversation_history=None,
+        trace_id="test-trace-answer-then-ask",
+    )
+
+    assert output.decision == "PASS"
+    assert "starting point" in output.answer.lower()
+    assert output.followup_questions == ["What budget range works for you?"]
+
+
+@patch("app.services.answer_service.match_intent")
+@patch("app.services.answer_service.normalize_query")
+@pytest.mark.asyncio
+async def test_rag_flow_supports_mixed_conversation_and_doc_evidence(mock_normalize, mock_match_intent):
+    mock_match_intent.return_value = None
+    mock_normalize.return_value = _make_query_spec(
+        required_evidence=["numbers_units"],
+        answerable_without_clarification=True,
+    )
+
+    retrieval = MockRetrievalService(chunks=_make_mixed_evidence_chunks())
+    llm = MockLLMGateway(
+        response=_make_llm_response(
+            decision="PASS",
+            answer="VPS plans start at $6/month, and a prior conversation example shows extra IP requests can be handled by support.",
+            citations=[
+                {"chunk_id": "chunk-price-1", "source_url": "https://green.cloud/pricing", "doc_type": "pricing"},
+                {"chunk_id": "chunk-conv-1", "source_url": "ticket://conversation-1", "doc_type": "conversation"},
+            ],
+            confidence=0.82,
+        )
+    )
+    reviewer = MockReviewerGate()
+
+    svc = AnswerService(retrieval=retrieval, llm=llm, reviewer=reviewer)
+    output = await svc.generate(
+        query="can i buy more ip for my vps",
+        conversation_history=None,
+        trace_id="test-trace-mixed-evidence",
+    )
+
+    assert output.decision == "PASS"
+    assert len(output.citations) == 2
+    assert {c["doc_type"] for c in output.citations} == {"pricing", "conversation"}

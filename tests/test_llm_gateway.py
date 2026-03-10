@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.llm_gateway import LLMResponse, OpenAIGateway, _cache_key
+from app.services.llm_gateway import LLMResponse, OpenAIGateway, _cache_key, clear_llm_cache
 
 
 class _Settings:
@@ -106,3 +106,32 @@ async def test_chat_returns_cached_response_without_calling_provider(monkeypatch
         model="gpt-5.2",
     )
     assert result is cached
+
+
+@pytest.mark.asyncio
+async def test_clear_llm_cache_deletes_llm_namespace(monkeypatch):
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def keys(self, pattern):
+            assert pattern == "llm_cache:*"
+            return [b"llm_cache:a", b"llm_cache:b", b"llm_cache:c"]
+
+        async def delete(self, *keys):
+            assert keys == (b"llm_cache:a", b"llm_cache:b", b"llm_cache:c")
+            return 3
+
+        async def close(self):
+            self.closed = True
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr("app.services.llm_gateway.get_settings", lambda: _Settings())
+
+    from unittest.mock import patch
+
+    with patch("redis.asyncio.from_url", return_value=fake_redis):
+        result = await clear_llm_cache()
+
+    assert result == {"deleted_keys": 3}
+    assert fake_redis.closed is True

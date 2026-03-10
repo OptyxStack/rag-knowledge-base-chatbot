@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { admin, type Intent, type IntentCreate, type IntentUpdate } from '../api/client'
+import { admin, type Intent, type IntentCreate } from '../api/client'
 import {
   Plus,
   Trash2,
@@ -309,7 +309,7 @@ function IntentCreateModal({ onClose, onCreated }: { onClose: () => void; onCrea
             <textarea
               value={patterns}
               onChange={(e) => setPatterns(e.target.value)}
-              placeholder={"\\b(who are you|bạn là ai)\\b"}
+              placeholder={"\\b(who are you|what are you)\\b"}
               rows={3}
               className="w-full px-3 py-2 rounded-lg input-glass text-sm font-mono"
               required

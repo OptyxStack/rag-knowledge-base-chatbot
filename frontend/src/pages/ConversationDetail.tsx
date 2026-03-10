@@ -647,7 +647,7 @@ function DebugSection({ icon, title, children }: { icon: React.ReactNode; title:
   )
 }
 
-function StatPill({ label, value }: { label: string; value?: number | null }) {
+function StatPill({ label, value }: { label: string; value?: string | number | null }) {
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 bg-black/20 rounded-lg border border-white/[0.04]">
       <span className="text-zinc-500">{label}</span>

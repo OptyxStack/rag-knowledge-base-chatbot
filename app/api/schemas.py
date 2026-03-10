@@ -363,14 +363,19 @@ class SaveWhmcsCookiesResponse(BaseModel):
     count: int = Field(..., description="Number of cookies saved")
 
 
+class WhmcsDefaultsResponse(BaseModel):
+    """WHMCS crawler defaults from config/env."""
+
+    base_url: str = Field(..., description="WHMCS base URL (empty if not configured)")
+    list_path: str = Field(..., description="Ticket list path")
+    login_path: str = Field(..., description="Login page path")
+
+
 class CheckWhmcsCookiesRequest(BaseModel):
     """Check if cookies authenticate. Uses saved cookies if session_cookies not provided."""
 
     session_cookies: list[dict[str, Any]] | None = None
-    base_url: str = Field(
-        default="https://greencloudvps.com/billing/greenvps",
-        description="WHMCS base URL",
-    )
+    base_url: str = Field(default="", description="WHMCS base URL (empty = use config/env)")
     list_path: str = Field(
         default="supporttickets.php?filter=1",
         description="Ticket list path",
@@ -396,8 +401,8 @@ class CrawlTicketsRequest(BaseModel):
         description="Inline cookies (optional if already saved via save-whmcs-cookies)",
     )
     base_url: str = Field(
-        default="https://greencloudvps.com/billing/greenvps",
-        description="WHMCS base URL",
+        default="",
+        description="WHMCS base URL (empty = use config/env)",
     )
     list_path: str = Field(
         default="supporttickets.php?filter=1",

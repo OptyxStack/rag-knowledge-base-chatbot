@@ -82,6 +82,7 @@ class PhaseResult:
     generated_decision: str | None = None
     reviewer_result: Any = None
     retry_query_override: str | None = None
+    hypothesis_judge: dict[str, Any] | None = None
 
 
 @dataclass
@@ -120,6 +121,7 @@ class OrchestratorContext:
     confidence: float = 0.0
     generated_decision: str | None = None
     retry_query_override: str | None = None
+    hypothesis_judge: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def can_retry(self) -> bool:
@@ -199,6 +201,11 @@ class Orchestrator:
         if ctx.state == OrchestratorState.RETRIEVING:
             if has_evidence:
                 return OrchestratorAction.ASSESS_EVIDENCE
+            if (
+                ctx.query_spec
+                and getattr(ctx.query_spec, "answerable_without_clarification", True) is False
+            ):
+                return OrchestratorAction.DECIDE
             if ctx.can_retry():
                 return OrchestratorAction.RETRY_RETRIEVE
             return OrchestratorAction.ASK_USER
@@ -321,6 +328,7 @@ class Orchestrator:
                 final_lane=getattr(rr, "final_lane", None) or status_str,
                 suggested_retry_plan=None,
             )
+            ctx.hypothesis_judge = result.hypothesis_judge
             ctx.state = OrchestratorState.REVIEWING
             ctx.add_stage_reason("verify", _reviewer_status_to_str(rr) or "unknown")
 

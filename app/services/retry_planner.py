@@ -28,6 +28,14 @@ class RetryStrategy:
     exclude_patterns: list[str] = field(default_factory=list)
     context_expansion: bool = False
     suggested_query: str | None = None
+    hypothesis_index: int | None = None
+    hypothesis_name: str | None = None
+    required_evidence_override: list[str] | None = None
+    hard_requirements_override: list[str] | None = None
+    soft_requirements_override: list[str] | None = None
+    preferred_sources_override: list[str] | None = None
+    retrieval_profile_override: str | None = None
+    answer_shape_override: str | None = None
 
 
 def plan_retry(
@@ -41,7 +49,7 @@ def plan_retry(
     Uses evidence_eval_result (Evidence Evaluator LLM) when retry_needed.
     Fallback: suggested_query from query_spec.rewrite_candidates.
     """
-    if attempt != 2:
+    if attempt < 2:
         return None
 
     if not missing_signals:
@@ -50,6 +58,14 @@ def plan_retry(
     suggested_query: str | None = None
     boost_patterns: list[str] = []
     filter_doc_types: list[str] | None = None
+    hypothesis_index: int | None = None
+    hypothesis_name: str | None = None
+    required_evidence_override: list[str] | None = None
+    hard_requirements_override: list[str] | None = None
+    soft_requirements_override: list[str] | None = None
+    preferred_sources_override: list[str] | None = None
+    retrieval_profile_override: str | None = None
+    answer_shape_override: str | None = None
 
     if evidence_eval_result and evidence_eval_result.retry_needed:
         suggested_query = evidence_eval_result.suggested_query
@@ -61,9 +77,31 @@ def plan_retry(
     elif query_spec and getattr(query_spec, "rewrite_candidates", None):
         candidates = query_spec.rewrite_candidates or []
         if len(candidates) > 1:
-            suggested_query = candidates[1]
+            candidate_idx = min(attempt - 1, len(candidates) - 1)
+            suggested_query = candidates[candidate_idx]
 
-    if not suggested_query and not boost_patterns and not filter_doc_types:
+    if query_spec and getattr(query_spec, "fallback_hypotheses", None):
+        fallbacks = query_spec.fallback_hypotheses or []
+        fb_idx = min(max(attempt - 2, 0), len(fallbacks) - 1)
+        if 0 <= fb_idx < len(fallbacks):
+            hypothesis = fallbacks[fb_idx]
+            hypothesis_index = fb_idx + 1  # 0 = primary
+            hypothesis_name = getattr(hypothesis, "name", None) or f"fallback_{fb_idx + 1}"
+            required_evidence_override = list(getattr(hypothesis, "required_evidence", None) or [])
+            hard_requirements_override = list(getattr(hypothesis, "hard_requirements", None) or [])
+            soft_requirements_override = list(getattr(hypothesis, "soft_requirements", None) or [])
+            preferred_sources_override = list(getattr(hypothesis, "preferred_sources", None) or [])
+            retrieval_profile_override = getattr(hypothesis, "retrieval_profile", None)
+            answer_shape_override = getattr(hypothesis, "answer_shape", None)
+            if not suggested_query and getattr(hypothesis, "query_hint", None):
+                suggested_query = str(hypothesis.query_hint).strip()
+
+    if (
+        not suggested_query
+        and not boost_patterns
+        and not filter_doc_types
+        and hypothesis_index is None
+    ):
         return None
 
     logger.debug(
@@ -77,4 +115,12 @@ def plan_retry(
         exclude_patterns=[],
         context_expansion=False,
         suggested_query=suggested_query,
+        hypothesis_index=hypothesis_index,
+        hypothesis_name=hypothesis_name,
+        required_evidence_override=required_evidence_override,
+        hard_requirements_override=hard_requirements_override,
+        soft_requirements_override=soft_requirements_override,
+        preferred_sources_override=preferred_sources_override,
+        retrieval_profile_override=retrieval_profile_override,
+        answer_shape_override=answer_shape_override,
     )

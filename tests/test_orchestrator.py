@@ -51,6 +51,29 @@ def test_next_action_retrieving_no_evidence_no_retry_returns_ask_user():
     assert orch.next_action(ctx, has_evidence=False) == OrchestratorAction.ASK_USER
 
 
+def test_next_action_retrieving_blocking_clarification_skips_retry_and_decides():
+    orch = Orchestrator()
+    ctx = _ctx(
+        OrchestratorState.RETRIEVING,
+        retrieval_attempt=0,
+        max_attempts=2,
+        query_spec=QuerySpec(
+            intent="ambiguous",
+            entities=[],
+            constraints={},
+            required_evidence=[],
+            risk_level="low",
+            keyword_queries=[],
+            semantic_queries=[],
+            clarifying_questions=["Which product are you asking about?"],
+            is_ambiguous=True,
+            answerable_without_clarification=False,
+            blocking_clarifying_questions=["Which product are you asking about?"],
+        ),
+    )
+    assert orch.next_action(ctx, has_evidence=False) == OrchestratorAction.DECIDE
+
+
 def test_next_action_assessing_quality_fail_can_retry_returns_retry():
     orch = Orchestrator()
     ctx = _ctx(

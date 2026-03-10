@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Keep browser binaries outside /app to avoid bind-mount overwrite in dev/runtime.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV PLAYWRIGHT_INSTALL_ON_STARTUP=false
 RUN python -m playwright install chromium
 
 COPY . .
@@ -27,6 +28,6 @@ RUN sed -i 's/\r$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-# Entrypoint installs browsers at startup (correct platform, avoids cache issues)
+# Entrypoint can optionally install browsers at startup when explicitly enabled.
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000","--workers","10"]

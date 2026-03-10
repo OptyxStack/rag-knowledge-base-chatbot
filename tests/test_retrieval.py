@@ -174,3 +174,113 @@ async def test_retrieve_uses_plan_budget_hint_as_authoritative(monkeypatch):
     assert pack.retrieval_stats["hard_requirements"] == ["policy_language"]
     assert opensearch.calls[0]["top_n"] == 11
     assert opensearch.calls[0]["doc_types"] == ["policy"]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_fetches_conversation_as_secondary_source(monkeypatch):
+    class FakeOpenSearch:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def search(self, query: str, *, top_n: int = 50, doc_types=None, boost_pricing=False, prefer_snippet=False):
+            self.calls.append({"query": query, "doc_types": list(doc_types or []), "top_n": top_n})
+            if doc_types == ["conversation"]:
+                return [
+                    SearchChunk("conv-1", "d2", "Customer bought extra IP for VPS via support.", "ticket://1", "conversation", 0.7),
+                ]
+            return [
+                SearchChunk("price-1", "d1", "VPS plan starts at $10/month.", "https://docs/pricing", "pricing", 0.9),
+            ]
+
+    class FakeQdrant:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def search(self, *, vector, top_n: int = 50, doc_types=None):
+            self.calls.append({"doc_types": list(doc_types or []), "top_n": top_n})
+            if doc_types == ["conversation"]:
+                return [
+                    SearchChunk("conv-vec-1", "d3", "Extra IP can be added after order.", "ticket://2", "conversation", 0.65),
+                ]
+            return [
+                SearchChunk("price-vec-1", "d4", "Monthly VPS pricing details.", "https://docs/pricing-2", "pricing", 0.8),
+            ]
+
+    class FakeEmbedder:
+        async def embed(self, texts):
+            _ = texts
+            return [[0.1, 0.2]]
+
+    class FakeReranker:
+        async def rerank(self, query, chunks, top_k):
+            _ = query
+            ranked = sorted(chunks, key=lambda c: c.score, reverse=True)
+            return [(c, c.score) for c in ranked[:top_k]]
+
+    svc = RetrievalService(
+        opensearch=FakeOpenSearch(),
+        qdrant=FakeQdrant(),
+        embedding_provider=FakeEmbedder(),
+        reranker=FakeReranker(),
+    )
+    monkeypatch.setattr(
+        svc,
+        "_settings",
+        type(
+            "S",
+            (),
+            {
+                "retrieval_top_n": 20,
+                "retrieval_top_k": 4,
+                "retrieval_fusion": "simple",
+                "retrieval_rrf_k": 60,
+                "retrieval_plans_extra_chunks": 4,
+                "retrieval_ensure_doc_type_min": 0,
+                "evidence_selector_use_llm": False,
+                "evidence_selector_fallback_top_k": 4,
+            },
+        )(),
+    )
+
+    plan = RetrievalPlan(
+        profile="pricing_profile",
+        attempt_index=1,
+        reason="test_plan",
+        query_keyword="buy more ip for my vps",
+        query_semantic="buy more ip for my vps",
+        active_hypothesis_name="primary",
+        preferred_doc_types=["pricing"],
+        preferred_sources=["conversation"],
+        authoritative_doc_types=["pricing"],
+        supporting_doc_types=["conversation"],
+        active_required_evidence=["numbers_units"],
+        fetch_n=10,
+        rerank_k=4,
+        budget_hint={"ensure_doc_types": ["pricing"], "preferred_sources": ["conversation"], "hard_requirements": []},
+    )
+
+    pack = await svc.retrieve("buy more ip", retrieval_plan=plan)
+
+    assert pack.retrieval_stats["primary_doc_types"] == ["pricing"]
+    assert pack.retrieval_stats["preferred_sources"] == ["conversation"]
+    assert pack.retrieval_stats["supporting_bm25_count"] == 1
+    assert any(chunk.doc_type == "conversation" for chunk in pack.chunks)
+
+
+def test_retain_supporting_conversation_chunk_preserves_one_when_selector_drops_it():
+    selected = [
+        (SearchChunk("p1", "d1", "pricing", "https://docs/pricing", "pricing", 0.9), 0.9),
+        (SearchChunk("f1", "d2", "faq", "https://docs/faq", "faq", 0.6), 0.6),
+    ]
+    candidates = selected + [
+        (SearchChunk("c1", "d3", "conversation", "ticket://1", "conversation", 0.7), 0.7),
+    ]
+
+    updated = RetrievalService._retain_supporting_conversation_chunk(
+        selected,
+        candidates,
+        max_items=2,
+    )
+
+    assert len(updated) == 2
+    assert any(chunk.doc_type == "conversation" for chunk, _ in updated)

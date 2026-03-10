@@ -19,6 +19,8 @@ def _ambiguous_spec() -> QuerySpec:
         semantic_queries=["x"],
         clarifying_questions=["What would you like to compare?"],
         is_ambiguous=True,
+        answerable_without_clarification=False,
+        blocking_clarifying_questions=["What would you like to compare?"],
     )
 
 
@@ -49,6 +51,37 @@ def test_route_pass():
     assert dr.reason == "sufficient"
     assert dr.lane == "PASS_STRONG"
     assert dr.answer_policy == "direct"
+
+
+def test_route_pass_weak_for_answerable_refinement_case():
+    spec = QuerySpec(
+        intent="transactional",
+        entities=[],
+        constraints={},
+        required_evidence=["numbers_units"],
+        risk_level="low",
+        keyword_queries=["x"],
+        semantic_queries=["x"],
+        clarifying_questions=["What budget range do you have in mind?"],
+        is_ambiguous=True,
+        answerable_without_clarification=True,
+        assistant_should_lead=True,
+        missing_info_for_refinement=["budget"],
+        refinement_questions=["What budget range do you have in mind?"],
+        answer_mode_hint="weak",
+    )
+    report = QualityReport(0.8, {"numbers_units": 0.9}, [], None, None)
+    evidence = [
+        EvidenceChunk("c1", "Starter plan: $10/month", "https://example.com/pricing", "pricing", 0.8, "Starter plan: $10/month"),
+    ]
+
+    dr = route(spec, report, evidence, ["numbers_units"], True)
+
+    assert dr.decision == "PASS"
+    assert dr.reason == "answerable_with_refinement"
+    assert dr.lane == "PASS_WEAK"
+    assert dr.answer_policy == "bounded"
+    assert dr.clarifying_questions == ["What budget range do you have in mind?"]
 
 
 def test_route_missing_evidence_quality():

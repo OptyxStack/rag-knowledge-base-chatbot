@@ -75,3 +75,21 @@ async def test_verify_falls_back_to_pass_for_invalid_generated_decision():
     assert reviewer.last_kwargs is not None
     assert reviewer.last_kwargs["decision"] == "PASS"
     assert result.reviewer_result.status == ReviewerStatus.PASS
+
+
+@pytest.mark.asyncio
+async def test_verify_runs_multi_hypothesis_judge_when_history_present():
+    from app.services import phases
+    phases.verify._pipeline_log = lambda *args, **kwargs: None
+
+    ctx = _ctx()
+    ctx.extra["hypothesis_history"] = [
+        {"name": "primary", "retrieval_profile": "policy_profile", "evidence_families": ["policy_terms"], "quality_score": 0.2, "gate_pass": False, "evidence_count": 4},
+        {"name": "fallback_capability", "retrieval_profile": "pricing_profile", "evidence_families": ["capability_availability"], "quality_score": 0.8, "gate_pass": True, "evidence_count": 5},
+    ]
+    reviewer = _ReviewerStub()
+
+    result = await execute_verify(ctx, reviewer=reviewer)
+
+    assert result.hypothesis_judge is not None
+    assert result.hypothesis_judge["selected_hypothesis"] == "fallback_capability"
