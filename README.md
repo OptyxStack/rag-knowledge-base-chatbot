@@ -137,30 +137,30 @@ See `app/services/source_loaders.py` for supported formats.
 
 1. **Start services**: `docker-compose up -d`
 2. **Run migrations**: `docker-compose exec api alembic upgrade head`
-3. **Create admin**: `docker-compose exec api python -m scripts.create_admin_user` (nhập username/password khi được hỏi)
-4. **Đăng nhập frontend**: Mở http://localhost:5174 → Login với tài khoản vừa tạo
-5. **Thêm dữ liệu knowledge base** (chọn một hoặc nhiều cách bên dưới)
+3. **Create admin**: `docker-compose exec api python -m scripts.create_admin_user` (enter username/password when prompted)
+4. **Login to frontend**: Open http://localhost:5174 → Login with the account you just created
+5. **Add knowledge base data** (choose one or more methods below)
 
-### Cách 1: Ingest từ file JSON trong `source/`
+### Method 1: Ingest from JSON files in `source/`
 
-Chuẩn bị file `source/sample_docs.json` hoặc `source/sample_conversations.json`:
+Prepare `source/sample_docs.json` or `source/sample_conversations.json`:
 
 ```json
-// sample_docs.json - documents (trang web, policy, FAQ)
+// sample_docs.json - documents (web pages, policy, FAQ)
 {
   "pages": [
-    {"url": "https://example.com/refund-policy", "title": "Refund Policy", "text": "Nội dung đầy đủ..."}
+    {"url": "https://example.com/refund-policy", "title": "Refund Policy", "text": "Full content..."}
   ]
 }
 
-// sample_conversations.json - Q&A từ tickets (cần external_id, subject, description)
+// sample_conversations.json - Q&A from tickets (requires external_id, subject, description)
 {
   "source": "whmcs",
   "conversations": [
     {
       "external_id": "12345",
-      "subject": "Câu hỏi về refund",
-      "description": "User: Làm sao để refund?\nStaff: Bạn có thể yêu cầu hoàn tiền trong vòng 30 ngày...",
+      "subject": "Refund question",
+      "description": "User: How do I request a refund?\nStaff: You can request a refund within 30 days...",
       "status": "Closed",
       "priority": "Medium"
     }
@@ -168,88 +168,89 @@ Chuẩn bị file `source/sample_docs.json` hoặc `source/sample_conversations.
 }
 ```
 
-Chạy ingest:
+Run ingest:
 
 ```bash
 make ingest                                    # Ingest documents
 python scripts/ingest_tickets_from_source.py   # Ingest sample conversations
 ```
 
-### Cách 2: Fetch từ URL hoặc crawl website
+### Method 2: Fetch from URL or crawl website
 
-- **Một URL**: Dùng API `POST /v1/documents/fetch-from-url` với `{"url": "https://..."}` hoặc qua frontend **Documents** → Add → Fetch from URL
-- **Cả website**: Dùng API `POST /v1/documents/crawl-website` với `{"base_url": "https://example.com", "max_pages": 50}` hoặc qua frontend **Documents** → Crawl website
+- **Single URL**: Use API `POST /v1/documents/fetch-from-url` with `{"url": "https://..."}` or via frontend **Documents** → Add → Fetch from URL
+- **Entire website**: Use API `POST /v1/documents/crawl-website` with `{"base_url": "https://example.com", "max_pages": 50}` or via frontend **Documents** → Crawl website
 
-### Cách 3: Crawl WHMCS tickets (qua frontend)
+### Method 3: Crawl WHMCS tickets (via frontend)
 
-1. Vào **Crawl** (sidebar)
-2. Nhập **Base URL** (vd: `https://billing.example.com`)
-3. **Đăng nhập WHMCS**:
-   - **Cách A (Cookies)**: Đăng nhập WHMCS trên trình duyệt → DevTools → Application → Cookies → Copy JSON → Paste vào ô "Session cookies" → Save cookies
-   - **Cách B (Credentials)**: Nhập username, password (và TOTP nếu có) → Click "Login & Crawl"
-4. **Check connection** → Nếu OK, click **Crawl tickets**
-5. Vào **Sample conversations** (Tickets) → Duyệt từng ticket → **Approve** những ticket chất lượng cao
-6. **Export approved** → `POST /v1/admin/ingest-tickets-to-file` (hoặc nút tương ứng) để ghi ra `sample_conversations.json`
-7. Chạy `python scripts/ingest_tickets_from_source.py` để embed và index
+1. Go to **Crawl** (sidebar)
+2. Enter **Base URL** (e.g. `https://billing.example.com`)
+3. **Login to WHMCS**:
+   - **Option A (Cookies)**: Login to WHMCS in browser → DevTools → Application → Cookies → Copy JSON → Paste into "Session cookies" field → Save cookies
+   - **Option B (Credentials)**: Enter username, password (and TOTP if applicable) → Click "Login & Crawl"
+4. **Check connection** → If OK, click **Crawl tickets**
+5. Go to **Sample conversations** (Tickets) → Review each ticket → **Approve** high-quality tickets
+6. **Export approved** → `POST /v1/admin/ingest-tickets-to-file` (or corresponding button) to write to `sample_conversations.json`
+7. Run `python scripts/ingest_tickets_from_source.py` to embed and index
 
-### Cách 4: Import từ WHMCS SQL dump
+### Method 4: Import from WHMCS SQL dump
 
-Nếu có file dump WHMCS (vd `source/greenvps_whmcs.sql`):
+If you have a WHMCS dump file (e.g. `source/greenvps_whmcs.sql`):
 
 ```bash
-make import-whmcs-dry   # Kiểm tra parse trước
-make import-whmcs       # Import thật
+make import-whmcs-dry   # Validate parse first
+make import-whmcs       # Run actual import
 ```
 
-Sau đó approve tickets trong **Sample conversations** và ingest như bước 6–7 ở Cách 3.
+Then approve tickets in **Sample conversations** and ingest as in steps 6–7 of Method 3.
 
 ### Chat workflow (API)
 
-1. **Tạo conversation**:
+1. **Create conversation**:
    ```bash
    curl -X POST http://localhost:8000/v1/conversations \
      -H "Authorization: Bearer YOUR_JWT" \
      -H "Content-Type: application/json" \
      -d '{"source_type": "ticket", "source_id": "TKT-123"}'
    ```
-2. **Gửi tin nhắn** (sync hoặc stream):
+2. **Send message** (sync or stream):
    ```bash
    curl -X POST http://localhost:8000/v1/conversations/{CONV_ID}/messages \
      -H "Authorization: Bearer YOUR_JWT" \
      -H "Content-Type: application/json" \
-     -d '{"content": "Chính sách hoàn tiền của bạn là gì?"}'
+     -d '{"content": "What is your refund policy?"}'
    ```
-3. Response chứa `answer` (RAG-generated) và `debug_metadata` (retrieval, evidence).
+3. Response contains `answer` (RAG-generated) and `debug_metadata` (retrieval, evidence).
 
-### Frontend – các trang chính
+### Frontend – main pages
 
-| Trang | Mục đích |
-|-------|----------|
-| **Conversations** | Xem danh sách hội thoại, tạo mới, chat thử |
-| **Sample conversations** | Xem tickets đã crawl/import, approve/reject, export approved |
+| Page | Purpose |
+|------|---------|
+| **Conversations** | List conversations, create new, try chat |
+| **Sample conversations** | View crawled/imported tickets, approve/reject, export approved |
 | **Documents** | CRUD documents, fetch URL, crawl website, re-crawl |
-| **Crawl** | Cấu hình WHMCS, lưu cookies, crawl tickets |
-| **Dashboard** | Thống kê token, retrieval, escalation |
-| **Intents** | CRUD intents (phân loại câu hỏi) |
+| **Crawl** | Configure WHMCS, save cookies, crawl tickets |
+| **Dashboard** | Token stats, retrieval, escalation |
+| **Intents** | CRUD intents (query classification) |
 | **Doc Types** | CRUD doc types (policy, faq, pricing, …) |
 | **Settings** | System prompt, LLM config, branding, domain terms |
-| **API Tokens** | Tạo/revoke API token (sk_*) |
-| **API Reference** | Tài liệu API |
+| **API Tokens** | Create/revoke API token (sk_*) |
+| **API Reference** | API documentation |
 
-### Tích hợp với hệ thống bên ngoài
+### External system integration
 
-- **Livechat / Ticket system**: Gọi `POST /v1/conversations` với `source_type: "livechat"` hoặc `"ticket"`, `source_id` = ID từ hệ thống của bạn. Khi user gửi tin nhắn, gọi `POST /v1/conversations/{id}/messages` và dùng `answer` để hiển thị cho user.
-- **Webhook**: Có thể wrap API trong webhook endpoint của bạn để nhận request từ livechat/ticket platform.
+- **Suggested reply (platform-agnostic)**: Call `POST /v1/reply/generate` with `query` = ticket/chat content. No conversation creation required. Use for WHMCS, Zendesk, livechat, or any helpdesk.
+- **Livechat / Ticket system (chat flow)**: Call `POST /v1/conversations` with `source_type: "livechat"` or `"ticket"`, `source_id` = ID from your system. When user sends a message, call `POST /v1/conversations/{id}/messages` and use `answer` to display to the user.
+- **Webhook**: You can wrap the API in your webhook endpoint to receive requests from livechat/ticket platforms.
 
 ### Troubleshooting
 
-| Vấn đề | Gợi ý |
-|--------|-------|
-| Login frontend báo 401 | Kiểm tra `JWT_SECRET` trong `.env`, đảm bảo đã chạy `make create-admin` |
-| Crawl WHMCS thất bại | Cookies hết hạn → đăng nhập lại WHMCS, copy cookies mới |
-| Ingest không có dữ liệu | Kiểm tra file trong `source/` đúng format (pages, conversations), chạy `make ingest-dry` để xem log |
-| API trả 401 | Dùng Bearer JWT (từ `/auth/login`) hoặc `X-API-Key` hợp lệ |
-| OpenSearch/Qdrant lỗi | Đảm bảo các service đã healthy: `docker-compose ps` |
+| Issue | Suggestion |
+|-------|------------|
+| Frontend login returns 401 | Check `JWT_SECRET` in `.env`, ensure you ran `make create-admin` |
+| WHMCS crawl fails | Cookies expired → log in to WHMCS again, copy new cookies |
+| Ingest has no data | Check files in `source/` have correct format (pages, conversations), run `make ingest-dry` to see logs |
+| API returns 401 | Use Bearer JWT (from `/auth/login`) or valid `X-API-Key` |
+| OpenSearch/Qdrant error | Ensure all services are healthy: `docker-compose ps` |
 
 ## Authentication
 
@@ -291,6 +292,12 @@ make create-admin
 | DELETE | `/v1/conversations/{id}` | Delete |
 | POST | `/v1/conversations/{id}/messages` | Send message (sync) |
 | POST | `/v1/conversations/{id}/messages:stream` | Send message (SSE) |
+
+### Suggest Reply (platform-agnostic)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/v1/reply/generate` | Generate suggested reply (ticket, livechat, helpdesk). Stateless, no conversation required. |
 
 ### Tickets
 
@@ -373,6 +380,21 @@ curl -X POST http://localhost:8000/v1/conversations/{CONV_ID}/messages \
   -d '{"content": "What is your refund policy?"}'
 ```
 
+### Generate suggested reply (platform-agnostic)
+
+```bash
+curl -X POST http://localhost:8000/v1/reply/generate \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_JWT" \
+  -d '{
+    "query": "What is your refund policy? I want to cancel my order.",
+    "source_type": "ticket",
+    "source_id": "TKT-12345"
+  }'
+```
+
+Response: `{ "answer": "...", "decision": "PASS"|"ASK_USER"|"ESCALATE", "followup_questions": [], "citations": [...], "confidence": 0.9 }`
+
 ### Ingest documents
 
 ```bash
@@ -413,6 +435,8 @@ curl -X POST http://localhost:8000/v1/admin/ingest \
 | `NORMALIZER_SLOTS_ENABLED` | `false` | Enable slot extraction (product_type, os, billing_cycle, region) |
 | `NORMALIZER_SLOT_PRODUCT_TYPES` | - | Product types for slots (e.g. vps,dedicated,vds). Empty = disabled |
 | `NORMALIZER_SLOT_OS_TYPES` | - | OS types for os slot (e.g. windows,linux,macos). Empty = disabled |
+| `CORS_ORIGINS` | `*` | CORS allowed origins. Comma-separated (e.g. `https://app.example.com`). `*` = allow all (dev) |
+| `DOCS_ENABLED` | `true` | Enable `/docs` and `/redoc`. Set `false` in production to hide API docs |
 
 ## Scripts
 
@@ -453,7 +477,7 @@ Or use Docker: `docker-compose up -d frontend` → http://localhost:5174
 ```
 app/
   main.py              # FastAPI app
-  api/routes/          # auth, conversations, tickets, documents, admin, health, dashboard
+  api/routes/          # auth, conversations, reply, tickets, documents, admin, health, dashboard
   services/            # retrieval, LLM, ingestion, ticket_db, ticket_loaders, source_loaders
   search/              # OpenSearch, Qdrant, reranker, embeddings
   crawlers/            # WHMCS crawler (Playwright)

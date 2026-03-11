@@ -11,26 +11,38 @@ from app.services.schemas import AnswerPlan, DecisionResult, QuerySpec
 
 logger = get_logger(__name__)
 
-# Raw citation patterns leaked by LLM into answer text - strip these
+# Raw citation patterns leaked by LLM into answer text - strip these. Citations belong in the citations array only.
+_UUID = r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"
+_URL = r"(?:ticket://[a-f0-9-]+|https?://[^\s\)\;]+)"
+
 # 1. [chunk_id, source_url] format
 _RAW_CITATION_PATTERN = re.compile(
-    r"\[\s*[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\s*,\s*"
-    r"(?:ticket://[a-f0-9-]+|https?://[^\]]+)\s*\]",
+    rf"\[\s*{_UUID}\s*,\s*{_URL}\s*\]",
     re.IGNORECASE,
 )
-# 2. Standalone [chunk_id] - chunk IDs in brackets (UUID format)
-_CHUNK_ID_PATTERN = re.compile(
-    r"\[\s*[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\s*\]",
+# 2. Standalone [chunk_id] in brackets
+_CHUNK_ID_PATTERN = re.compile(rf"\[\s*{_UUID}\s*\]", re.IGNORECASE)
+# 3. (Chunk uuid, url) or (Chunks uuid1, url1; uuid2, url2) - parenthesized
+_CHUNK_PAREN_PATTERN = re.compile(
+    rf"\(\s*Chunks?\s+{_UUID}(?:\s*,\s*{_URL})?"
+    rf"(?:\s*;\s*{_UUID}(?:\s*,\s*{_URL})?)*\s*\)",
+    re.IGNORECASE,
+)
+# 4. Chunk uuid or Chunks uuid1; uuid2 - standalone (no brackets/parens)
+_CHUNK_STANDALONE_PATTERN = re.compile(
+    rf"\bChunks?\s+{_UUID}(?:\s*,\s*{_URL})?(?:\s*;\s*{_UUID}(?:\s*,\s*{_URL})?)*\b",
     re.IGNORECASE,
 )
 
 
 def _sanitize_raw_citations(answer: str) -> str:
-    """Remove raw [chunk_id, source_url] and standalone [chunk_id] from answer text. Citations belong in the citations array only."""
+    """Remove raw chunk citations from answer text. Citations belong in the citations array only."""
     if not answer or not answer.strip():
         return answer
     cleaned = _RAW_CITATION_PATTERN.sub("", answer)
     cleaned = _CHUNK_ID_PATTERN.sub("", cleaned)
+    cleaned = _CHUNK_PAREN_PATTERN.sub("", cleaned)
+    cleaned = _CHUNK_STANDALONE_PATTERN.sub("", cleaned)
     cleaned = re.sub(r"  +", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()

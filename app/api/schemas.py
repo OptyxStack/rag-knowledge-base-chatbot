@@ -79,6 +79,41 @@ class UpdateConversationRequest(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+# --- Suggest Reply (platform-agnostic) ---
+class SuggestReplyRequest(BaseModel):
+    """Request to generate a suggested reply. Works for any platform (ticket, livechat, helpdesk)."""
+
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=10000,
+        description="User message or ticket content (subject + description)",
+    )
+    source_type: str | None = Field(
+        None,
+        description="Optional: platform type for logging (e.g. ticket, livechat, helpdesk)",
+    )
+    source_id: str | None = Field(
+        None,
+        description="Optional: external ID for logging (e.g. ticket ID, chat ID)",
+    )
+    conversation_history: list[dict[str, str]] | None = Field(
+        None,
+        description="Optional: prior messages [{\"role\": \"user\"|\"assistant\", \"content\": \"...\"}] for context",
+    )
+
+
+class SuggestReplyResponse(BaseModel):
+    """Generated suggested reply. Same structure across all platforms."""
+
+    answer: str = Field(..., description="Generated reply text")
+    decision: str = Field(..., description="PASS | ASK_USER | ESCALATE")
+    followup_questions: list[str] = Field(default_factory=list)
+    citations: list[CitationSchema] = Field(default_factory=list)
+    confidence: float = Field(..., ge=0, le=1)
+    debug: dict[str, Any] | None = None
+
+
 # --- Documents CRUD ---
 class DocumentResponse(BaseModel):
     id: str

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import admin, auth, conversations, dashboard, documents, health, tickets
+from app.api.routes import admin, auth, conversations, dashboard, documents, health, reply, tickets
 from app.core.config import get_settings
 from app.core.gateway import GatewayMiddleware
 from app.core.logging import setup_logging, get_logger
@@ -42,17 +42,25 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
     settings = get_settings()
+    # Docs: hide in production when docs_enabled=False
+    docs_url = "/docs" if settings.docs_enabled else None
+    redoc_url = "/redoc" if settings.docs_enabled else None
+    openapi_url = "/openapi.json" if settings.docs_enabled else None
     app = FastAPI(
         title=settings.app_name,
         version="1.0.0",
         lifespan=lifespan,
-        docs_url="/docs",
-        redoc_url="/redoc",
+        docs_url=docs_url,
+        redoc_url=redoc_url,
+        openapi_url=openapi_url,
     )
 
+    # CORS: * = allow all (dev); comma-separated origins for production
+    origins_raw = (settings.cors_origins or "*").strip()
+    allow_origins = ["*"] if origins_raw == "*" else [o.strip() for o in origins_raw.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=allow_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -67,6 +75,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router, prefix=prefix)
     app.include_router(dashboard.router, prefix=prefix)
     app.include_router(conversations.router, prefix=prefix)
+    app.include_router(reply.router, prefix=prefix)
     app.include_router(documents.router, prefix=prefix)
     app.include_router(tickets.router, prefix=prefix)
     app.include_router(admin.router, prefix=prefix)

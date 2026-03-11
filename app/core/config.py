@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     app_name: str = Field(default="GreenCloud", description="Company/app name for branding and cache keys")
     debug: bool = False
     api_prefix: str = "/v1"
+    cors_origins: str = Field(
+        default="*",
+        description="CORS allowed origins. Comma-separated (e.g. https://app.example.com). Use * for allow all (dev).",
+    )
+    docs_enabled: bool = Field(
+        default=True,
+        description="Enable /docs and /redoc. Set false in production to hide API docs.",
+    )
 
     # Auth
     api_key: str = Field(default="", description="API key for standard access")
