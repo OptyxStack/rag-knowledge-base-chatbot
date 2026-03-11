@@ -19,6 +19,7 @@ async def execute_assess_evidence(ctx: OrchestratorContext) -> PhaseResult:
         required_evidence,
         hard_requirements=hard_requirements,
         product_type=product_type or None,
+        conversation_history=ctx.conversation_history or None,
     )
     try:
         from app.core.metrics import evidence_quality_score

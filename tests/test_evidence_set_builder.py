@@ -104,7 +104,7 @@ def test_build_evidence_set_with_coverage_map():
 def test_build_evidence_set_rejects_invalid_policy_mapping_from_faq(monkeypatch):
     monkeypatch.setattr(
         "app.services.evidence_set_builder.get_settings",
-        lambda: type("S", (), {"reviewer_policy_doc_types": ["policy", "tos"], "evidence_requirement_keywords": {}, "evidence_requirement_regex_patterns": {}})(),
+        lambda: type("S", (), {"reviewer_policy_doc_types": ["policy", "tos"]})(),
     )
     chunks = [
         (SearchChunk("c1", "d1", "faq refund content", "url1", "faq", 0.9), 0.95),

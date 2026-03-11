@@ -160,6 +160,23 @@ def route(
         )
 
     if not passes_quality_gate:
+        from app.core.config import get_settings
+
+        fallback_enabled = getattr(get_settings(), "fallback_llm_decides_enabled", True)
+        if (
+            fallback_enabled
+            and evidence
+            and (not query_spec or str(getattr(query_spec, "risk_level", "low")).lower() != "high")
+        ):
+            return DecisionResult(
+                decision="PASS",
+                reason="llm_decides_with_partial",
+                clarifying_questions=[],
+                partial_links=[],
+                answer="",
+                answer_policy="llm_decides",
+                lane="PASS_LLM_DECIDES",
+            )
         links = _extract_partial_links(evidence)
         return DecisionResult(
             decision="ASK_USER",

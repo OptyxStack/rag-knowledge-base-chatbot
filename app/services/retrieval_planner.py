@@ -160,7 +160,10 @@ def resolve_retrieval_query(
     retry_strategy: RetryStrategy | None,
     explicit_override: str | None = None,
 ) -> tuple[str, str, list[str]]:
-    """Resolve retrieval query for this attempt from QuerySpec/retry inputs."""
+    """Resolve retrieval query for this attempt from QuerySpec/retry inputs.
+
+    Retry strategy (suggested_query, boost_patterns, etc.) comes from Evidence Evaluator LLM.
+    Fallback: query_spec.rewrite_candidates from Normalizer LLM. No hardcoded product rules."""
     rewrite_candidates = collect_rewrite_candidates(base_query, query_spec)
 
     if retry_strategy and getattr(retry_strategy, "suggested_query", None):

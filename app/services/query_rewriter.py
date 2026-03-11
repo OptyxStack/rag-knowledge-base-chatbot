@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.services.conversation_context import truncate_for_prompt
 from app.services.llm_gateway import get_llm_gateway
 from app.services.model_router import get_model_for_task
 
@@ -55,14 +56,17 @@ def _cache_key(query: str, conversation_snippet: str, retry_boost: str) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _conversation_snippet(conversation_history: list[dict[str, str]] | None, max_chars: int = 500) -> str:
+def _conversation_snippet(conversation_history: list[dict[str, str]] | None) -> str:
     """Extract last N messages as string for cache key."""
     if not conversation_history or len(conversation_history) < 2:
         return ""
+    settings = get_settings()
+    max_chars = settings.conversation_snippet_max_chars
+    content_limit = settings.conversation_message_content_max_chars
     parts = []
-    for m in conversation_history[-4:]:
+    for m in truncate_for_prompt(conversation_history):
         role = m.get("role", "user")
-        content = (m.get("content") or "").strip()[:150]
+        content = (m.get("content") or "").strip()[:content_limit]
         if content:
             parts.append(f"{role}:{content}")
     return "|".join(parts)[:max_chars]
@@ -172,11 +176,12 @@ async def rewrite_for_retrieval(
         logger.debug("query_rewriter_cache_hit", query_hash=cache_key[:16])
         return cached
 
+    content_limit = get_settings().conversation_message_content_max_chars
     user_parts = [f"Query: {query.strip()}"]
     if conversation_history and len(conversation_history) >= 2:
         ctx = "\n".join(
-            f"{m.get('role', 'user')}: {(m.get('content') or '')[:300]}"
-            for m in conversation_history[-4:]
+            f"{m.get('role', 'user')}: {(m.get('content') or '')[:content_limit]}"
+            for m in truncate_for_prompt(conversation_history)
         )
         user_parts.append(f"Conversation context:\n{ctx}")
     if retry_boost:

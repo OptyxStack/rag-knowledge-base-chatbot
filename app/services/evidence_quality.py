@@ -49,14 +49,13 @@ Output MUST be exactly this JSON object. No markdown, no code fences, no extra t
 }
 
 Field rules (strict):
-- is_sufficient: boolean true or false only. true = evidence allows a definitive answer (yes or no). false = evidence vague, silent on topic, or contradictory.
+- is_sufficient: boolean true or false only. true = evidence allows a useful answer. false = evidence vague, silent on topic, or contradictory.
 - confidence: number 0.0 to 1.0
 - reason: one short sentence
 - gaps: array of strings, empty when is_sufficient=true
 - coverage: object mapping requirement names to boolean. Use hint's required_evidence keys if provided.
 
-Critical: When evidence explicitly states the answer (e.g. "X is non-refundable", "Y is eligible"), set is_sufficient=true. The verdict does not depend on whether the answer is yes or no.
-- For how-to queries: when evidence contains a guide/steps for the requested topic (e.g. "How to change SSH port on Linux" for "change port on Linux VPS"), set is_sufficient=true.
+Critical: Set is_sufficient=true when evidence contains content that directly addresses the query. This includes: explicit facts (yes/no, policy, eligibility), how-to guides or steps, support ticket replies with actionable steps, or a bounded set of options. The answer need not be a single yes/no—procedural answers (steps, options, common fixes) are sufficient. Set false only when evidence is vague, silent on the topic, or contradictory. When conversation context is provided, consider it as additional evidence—prior answers may contain facts the assistant can build on for follow-up questions.
 """
 
 EVIDENCE_QUALITY_PROMPT = (
@@ -148,6 +147,7 @@ async def evaluate_quality(
     required_evidence: list[str] | None = None,
     hard_requirements: list[str] | None = None,
     product_type: str | None = None,
+    conversation_history: list[dict[str, str]] | None = None,
 ) -> QualityReport:
     hard_reqs = list(dict.fromkeys(hard_requirements or []))
     reqs = list(dict.fromkeys(required_evidence or []))
@@ -163,6 +163,16 @@ async def evaluate_quality(
         summaries.append(f"[{i}] {src}: {text}")
 
     user_content = f"Query: {query[:600]}\n\nEvidence:\n" + "\n".join(summaries)
+
+    if conversation_history:
+        from app.services.conversation_context import truncate_for_prompt
+
+        truncated = truncate_for_prompt(conversation_history)
+        ctx_block = "\n".join(
+            f"{m.get('role', 'user')}: {(m.get('content') or '')[:400]}"
+            for m in truncated
+        )
+        user_content += f"\n\nConversation context (last {len(truncated)} messages):\n{ctx_block}"
 
     hint: dict[str, Any] = {}
     if reqs:

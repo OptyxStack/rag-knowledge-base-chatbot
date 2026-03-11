@@ -172,22 +172,6 @@ class Settings(BaseSettings):
         default=True,
         description="Workstream 3: Build EvidenceSet from CandidatePool. Disable for legacy top-k only.",
     )
-    evidence_requirement_keywords: dict[str, list[str]] = Field(
-        default={
-            "transaction_link": ["http", "www.", "order", "store"],
-            "has_any_url": ["http", "www.", "order", "store"],
-            "policy_language": ["policy", "terms", "refund", "eligible"],
-            "steps_structure": ["step", "1.", "2.", "first", "second", "then"],
-        },
-        description="Fallback keyword hints for requirement->chunk matching in EvidenceSet builder when LLM coverage_map is absent.",
-    )
-    evidence_requirement_regex_patterns: dict[str, str] = Field(
-        default={
-            "numbers_units": r"\d+(\s*%|\s*usd|\s*vnd|\s*\$|/mo)",
-        },
-        description="Fallback regex hints for requirement->chunk matching in EvidenceSet builder when LLM coverage_map is absent.",
-    )
-
     # Evidence Quality Gate (Phase 1)
     evidence_quality_enabled: bool = Field(default=True, description="Enable evidence quality gate before LLM")
     evidence_quality_threshold: float = Field(default=0.6, ge=0, le=1, description="Aggregate quality threshold when no required_evidence")
@@ -277,6 +261,42 @@ class Settings(BaseSettings):
             "pricing": ["vps", "billing", "store", "pricing"],
         },
         description="URL keyword mapping for fallback doc_type inference (doc_type -> keyword list).",
+    )
+
+    # Conversation context
+    conversation_history_max_messages: int = Field(
+        default=20,
+        ge=4,
+        le=100,
+        description="Max messages to pass into pipeline (API layer). Last N from DB. Increase for long conversations.",
+    )
+    conversation_history_max_for_prompt: int = Field(
+        default=8,
+        ge=2,
+        le=30,
+        description="Max messages included in LLM prompts (normalizer, generate, query_rewriter). Keeps prompt size bounded.",
+    )
+    conversation_snippet_max_chars: int = Field(
+        default=500,
+        ge=100,
+        le=2000,
+        description="Max chars for conversation snippet (cache key, query rewriter).",
+    )
+    conversation_message_content_max_chars: int = Field(
+        default=300,
+        ge=100,
+        le=1000,
+        description="Max chars per message content in conversation context (normalizer, query_rewriter prompts).",
+    )
+
+    # Fallback when evidence gate fails but LLM may still answer (PASS_LLM_DECIDES)
+    fallback_llm_decides_enabled: bool = Field(
+        default=True,
+        description="When evidence gate fails but evidence exists, let LLM try to answer. If False, always ASK_USER.",
+    )
+    fallback_contact_support_message: str = Field(
+        default="Please contact our support team for assistance.",
+        description="Message when LLM cannot answer from partial evidence. Configurable for localization.",
     )
 
     # Rate limiting

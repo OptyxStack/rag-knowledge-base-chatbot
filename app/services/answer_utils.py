@@ -11,26 +11,10 @@ from app.services.schemas import AnswerPlan, DecisionResult, QuerySpec
 
 logger = get_logger(__name__)
 
-# Raw citation patterns leaked by LLM into answer text - strip these. Citations belong in the citations array only.
-_UUID = r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"
-_URL = r"(?:ticket://[a-f0-9-]+|https?://[^\s\)\;]+)"
-
-# 1. [chunk_id, source_url] format
-_RAW_CITATION_PATTERN = re.compile(
-    rf"\[\s*{_UUID}\s*,\s*{_URL}\s*\]",
-    re.IGNORECASE,
-)
-# 2. Standalone [chunk_id] in brackets
-_CHUNK_ID_PATTERN = re.compile(rf"\[\s*{_UUID}\s*\]", re.IGNORECASE)
-# 3. (Chunk uuid, url) or (Chunks uuid1, url1; uuid2, url2) - parenthesized
-_CHUNK_PAREN_PATTERN = re.compile(
-    rf"\(\s*Chunks?\s+{_UUID}(?:\s*,\s*{_URL})?"
-    rf"(?:\s*;\s*{_UUID}(?:\s*,\s*{_URL})?)*\s*\)",
-    re.IGNORECASE,
-)
-# 4. Chunk uuid or Chunks uuid1; uuid2 - standalone (no brackets/parens)
-_CHUNK_STANDALONE_PATTERN = re.compile(
-    rf"\bChunks?\s+{_UUID}(?:\s*,\s*{_URL})?(?:\s*;\s*{_UUID}(?:\s*,\s*{_URL})?)*\b",
+# Fallback: remove chunk citations leaked into answer text. Primary fix is prompt (branding_config).
+# Only UUID pattern needed; segment bounds found via string scan.
+_UUID_PATTERN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
     re.IGNORECASE,
 )
 
@@ -39,11 +23,36 @@ def _sanitize_raw_citations(answer: str) -> str:
     """Remove raw chunk citations from answer text. Citations belong in the citations array only."""
     if not answer or not answer.strip():
         return answer
-    cleaned = _RAW_CITATION_PATTERN.sub("", answer)
-    cleaned = _CHUNK_ID_PATTERN.sub("", cleaned)
-    cleaned = _CHUNK_PAREN_PATTERN.sub("", cleaned)
-    cleaned = _CHUNK_STANDALONE_PATTERN.sub("", cleaned)
-    cleaned = re.sub(r"  +", " ", cleaned)
+    result: list[str] = []
+    last_end = 0
+    for m in _UUID_PATTERN.finditer(answer):
+        seg_start = -1
+        for needle in ("(Chunks ", "(Chunk ", "["):
+            i = answer.rfind(needle, 0, m.start())
+            if i != -1 and (seg_start < 0 or i > seg_start):
+                seg_start = i
+        if seg_start < 0:
+            i = answer.rfind("(", 0, m.start())
+            if i != -1:
+                seg_start = i
+        if seg_start < 0:
+            i = answer.rfind(" Chunk ", 0, m.start())
+            if i != -1:
+                seg_start = i + 1
+        seg_end = len(answer)
+        for needle in (")", "]"):
+            i = answer.find(needle, m.end())
+            if i != -1:
+                seg_end = min(seg_end, i + 1)
+        if seg_start >= 0:
+            result.append(answer[last_end:seg_start])
+            last_end = seg_end
+        else:
+            result.append(answer[last_end:m.start()])
+            last_end = m.end()
+    result.append(answer[last_end:])
+    cleaned = "".join(result)
+    cleaned = re.sub(r" {2,}", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -111,8 +120,33 @@ def build_answer_plan(
         )
 
     lane = decision_router.resolved_lane() if decision_router else "PASS_STRONG"
-    if lane not in ("PASS_STRONG", "PASS_WEAK"):
+    if lane not in ("PASS_STRONG", "PASS_WEAK", "PASS_LLM_DECIDES"):
         lane = "PASS_STRONG"
+
+    if lane == "PASS_LLM_DECIDES":
+        from app.core.config import get_settings
+
+        fallback_msg = get_settings().fallback_contact_support_message
+        return AnswerPlan(
+            lane="PASS_LLM_DECIDES",
+            allowed_claim_scope="partial",
+            must_include=[
+                "Evidence quality gate failed. You have partial evidence and conversation context.",
+                "You may infer from general knowledge when evidence provides context (e.g. pricing, specs).",
+                "Either give a full answer (including inference) OR reply only with the fallback. Do not give hedging answers that say 'the evidence does not explain'.",
+                f"If you cannot answer, reply only with: {fallback_msg}",
+            ],
+            must_avoid=[
+                "Do not say 'the evidence does not explain' or similar hedging. Either answer or use fallback.",
+            ],
+            required_citations=[],
+            output_blocks=["direct_answer"],
+            tone_policy="helpful",
+            generation_constraints={
+                "confidence_cap": 0.7,
+                "fallback_message": fallback_msg,
+            },
+        )
 
     if lane == "PASS_WEAK":
         missing_signals = quality_report.missing_signals[:3] if quality_report else []
@@ -190,6 +224,17 @@ def format_answer_plan_instruction(
     quality_report: QualityReport | None,
 ) -> str:
     """Convert an AnswerPlan into a prompt-safe instruction block."""
+    if answer_plan.lane == "PASS_LLM_DECIDES":
+        fallback = answer_plan.generation_constraints.get("fallback_message", "Please contact our support team for assistance.")
+        return "\n".join([
+            "ROUTING DECISION: PASS_LLM_DECIDES.",
+            "OVERRIDE for this request: You may infer from general knowledge. Answer when you can (e.g. common facts, industry reasons like licensing costs). The 'only use evidence' rule is relaxed.",
+            "Either (1) give a full answer including inference, with decision=PASS, OR (2) reply ONLY with the fallback message below, with decision=PASS.",
+            "Do NOT use ASK_USER. Do NOT give hedging answers or followup questions. If you cannot answer, use the fallback only.",
+            "Do NOT say 'evidence you shared' or 'information you provided'—the evidence comes from our system, not the user. Use 'our documentation' or 'the information we have'.",
+            f"Fallback (use exactly when you cannot answer): {fallback}",
+        ])
+
     if answer_plan.lane == "PASS_WEAK":
         lines = [
             "ROUTING DECISION: PASS_WEAK.",
@@ -240,6 +285,68 @@ def apply_answer_plan(
     confidence_cap = constraints.get("confidence_cap")
     if isinstance(confidence_cap, (int, float)):
         confidence = min(confidence, float(confidence_cap))
+
+    if answer_plan.lane == "PASS_LLM_DECIDES":
+        fallback = constraints.get("fallback_message", "Please contact our support team for assistance.")
+        if decision == "ASK_USER":
+            decision = "PASS"
+            answer = str(fallback).strip()
+            followup = []
+        else:
+            # Replace with fallback only when answer is predominantly refusal (hedging with no substantive content)
+            lower = answer.lower()
+            hedging_markers = (
+                "does not include",
+                "does not state",
+                "does not explain",
+                "cannot provide",
+                "can't provide",
+                "i can't provide",
+                "i cannot provide",
+                "we can't confirm",
+                "we cannot confirm",
+                "we don't have",
+                "beyond what's",
+                "beyond what is",
+                "no explicit",
+                "no policy",
+                "no statement",
+                "no direct",
+                "not stated",
+                "not explained",
+                "so i can't",
+                "so i cannot",
+            )
+            has_hedging = any(m in lower for m in hedging_markers)
+            # Substantive = has numbers, prices, yes/no, or factual content (let LLM answer when it can)
+            has_substantive = (
+                any(c.isdigit() for c in answer)
+                or "$" in answer
+                or "/mo" in lower
+                or "gb" in lower
+                or "cores" in lower
+                or "yes," in lower
+                or "no," in lower
+                or "yes." in lower
+                or "no." in lower
+            )
+            # Refusal-dominant = starts with refusal (not a real answer)
+            refusal_starts = (
+                "the evidence",
+                "i cannot",
+                "i can't",
+                "we can't",
+                "we cannot",
+                "we don't have",
+                "because we don't",
+                "without ",
+                "the information provided",
+            )
+            starts_with_refusal = lower.lstrip().startswith(refusal_starts)
+            if has_hedging and not has_substantive and starts_with_refusal:
+                decision = "PASS"
+                answer = str(fallback).strip()
+                followup = []
 
     if answer_plan.lane == "PASS_WEAK" and answer.strip():
         if decision != "ESCALATE":

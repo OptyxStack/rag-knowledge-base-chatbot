@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.api.schemas import SuggestReplyRequest, SuggestReplyResponse, CitationSchema
 from app.core.auth import verify_api_key
 from app.core.guardrails import check_injection, sanitize_user_input
+from app.services.conversation_context import truncate_for_pipeline
 from app.core.logging import get_logger
 from app.core.tracing import get_trace_id
 from app.services.answer_service import AnswerService
@@ -35,13 +36,13 @@ async def generate_suggested_reply(
         raise HTTPException(status_code=400, detail="Invalid request")
     query = sanitize_user_input(body.query)
 
-    history = body.conversation_history or []
+    history = truncate_for_pipeline(body.conversation_history or [])
     trace_id = get_trace_id()
 
     answer_svc = AnswerService()
     output = await answer_svc.generate(
         query=query,
-        conversation_history=history[-10:] if history else None,
+        conversation_history=history if history else None,
         trace_id=trace_id,
     )
 

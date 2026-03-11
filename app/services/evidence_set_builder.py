@@ -2,52 +2,15 @@
 
 Per UPGRADE_RAG_DESIGN:
 - EvidenceSet optimized for answerability, not raw rank
-- One strong chunk can satisfy atomic requirements (e.g. transaction_link)
+- coverage_map from Evidence Selector (LLM) is the only source for covered_requirements
 - Primary vs supporting chunks; coverage metadata for explainability
 """
 
 from __future__ import annotations
 
-import re
-from typing import Any
-
 from app.core.config import get_settings
 from app.search.base import EvidenceChunk, SearchChunk
 from app.services.schemas import CandidatePool, EvidenceSet, QuerySpec, RetrievalPlan
-
-
-def _chunk_satisfies_requirement(chunk: SearchChunk, req: str) -> bool:
-    """Config-driven fallback heuristic: does chunk satisfy a requirement?"""
-    settings = get_settings()
-    req_key = (req or "").strip().lower()
-    if not req_key:
-        return False
-
-    text = (chunk.chunk_text or "").lower()
-    url = (chunk.source_url or "").lower()
-    doc_type = (chunk.doc_type or "").lower()
-    combined = f"{text} {url}".strip()
-
-    configured_policy_types = {
-        str(t).strip().lower()
-        for t in (settings.reviewer_policy_doc_types or [])
-        if str(t).strip()
-    }
-    if req_key == "policy_language" and configured_policy_types and doc_type in configured_policy_types:
-        return True
-
-    keyword_map = settings.evidence_requirement_keywords or {}
-    for keyword in keyword_map.get(req_key, []):
-        kw = str(keyword).strip().lower()
-        if kw and kw in combined:
-            return True
-
-    regex_map = settings.evidence_requirement_regex_patterns or {}
-    pattern = str(regex_map.get(req_key, "") or "").strip()
-    if pattern:
-        return bool(re.search(pattern, text, re.I))
-
-    return False
 
 
 def _coverage_mapping_allowed(chunk: SearchChunk, req: str) -> bool:
@@ -136,10 +99,6 @@ def build_evidence_set(
         if validated_coverage_map:
             for req, cid in validated_coverage_map.items():
                 if cid == chunk.chunk_id and req in (hard | soft):
-                    covered_req.add(req)
-        else:
-            for req in hard | soft:
-                if _chunk_satisfies_requirement(chunk, req):
                     covered_req.add(req)
         text_lower = (chunk.chunk_text or "").lower()
         for slot_name, slot_val in resolved.items():

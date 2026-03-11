@@ -217,7 +217,7 @@ class Orchestrator:
 
         if ctx.state == OrchestratorState.DECIDING:
             lane = ctx.current_lane()
-            if lane in ("PASS_STRONG", "PASS_WEAK", "PASS"):
+            if lane in ("PASS_STRONG", "PASS_WEAK", "PASS", "PASS_LLM_DECIDES"):
                 return OrchestratorAction.GENERATE
             if lane == "ESCALATE":
                 return OrchestratorAction.ESCALATE

@@ -10,6 +10,7 @@ from app.services.answer_utils import (
 )
 from app.services.archi_config import get_self_critic_enabled
 from app.services.branding_config import get_system_prompt
+from app.services.conversation_context import truncate_for_prompt
 from app.services.flow_debug import _pipeline_log
 from app.services.orchestrator import OrchestratorContext, PhaseResult
 from app.services.self_critic import critique as self_critic
@@ -42,7 +43,7 @@ async def execute_generate(
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     if ctx.conversation_history:
-        for msg in ctx.conversation_history[-4:]:
+        for msg in truncate_for_prompt(ctx.conversation_history):
             messages.append({"role": msg["role"], "content": msg["content"]})
     messages.append({"role": "user", "content": user_content})
     ctx.extra["messages"] = messages

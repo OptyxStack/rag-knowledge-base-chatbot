@@ -19,6 +19,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.services.conversation_context import truncate_for_prompt
 from app.services.llm_gateway import get_llm_gateway
 from app.services.retrieval_planner import (
     derive_hard_requirements,
@@ -145,8 +146,7 @@ Guidance (non-binding):
 - skip_retrieval: true when the query is routine and needs no knowledge base (greeting, thanks, bye, simple chitchat). Respond immediately with canned_response.
 - canned_response: when skip_retrieval is true, provide a friendly reply (e.g. greeting "Hello! How can I help you today?").
 - keyword_queries / semantic_queries: focus on the resolved question (1-2 each). Empty when skip_retrieval.
-- retrieval_rewrites: 0-8 short variations for retry. Empty when skip_retrieval.
-- retrieval_rewrites should include variants that match how docs or product pages are usually phrased, not only literal paraphrases. For add-on/capability asks (for example buying extra capacity), include documentation-style variants likely to appear on pricing/product pages (for example: "additional IPs", "IP add-on", "extra IP", "upgrade storage").
+- retrieval_rewrites: 0-8 short variations for retry. Empty when skip_retrieval. Order by retrieval effectiveness—early rewrites are tried first. Each should match how docs or product pages are phrased. Ensure rewrites cover the full scope of the query (all entities, products, or sides the user asks about).
 """
 NORMALIZER_SYSTEM_PROMPT = (
     NORMALIZER_SYSTEM_PROMPT
@@ -614,12 +614,14 @@ async def _normalize_llm(
 
     # Provide lightweight context. No rewriting/expansion logic in code.
     if conversation_history:
+        truncated = truncate_for_prompt(conversation_history)
+        content_limit = get_settings().conversation_message_content_max_chars
         ctx = "\n".join(
-            f"{m.get('role', 'user')}: {(m.get('content') or '')[:240]}"
-            for m in conversation_history[-4:]
+            f"{m.get('role', 'user')}: {(m.get('content') or '')[:content_limit]}"
+            for m in truncated
         ).strip()
         if ctx:
-            user_parts.append(f"Conversation context (last 4):\n{ctx}")
+            user_parts.append(f"Conversation context (last {len(truncated)}):\n{ctx}")
 
     user_content = "\n\n".join(user_parts).strip()
 

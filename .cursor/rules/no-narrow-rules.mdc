@@ -1,0 +1,43 @@
+---
+description: Avoid narrow rules—keep prompts and logic generic, extensible
+alwaysApply: true
+---
+
+# No Narrow Rules
+
+## Principle
+
+Rules, prompts, and logic must be **generic** and **extensible**. Avoid anything that applies only to one product, one query shape, or one domain.
+
+## In Code
+
+```python
+# ❌ BAD – narrow
+if "mac" in q and "linux" in q:
+    use_combined_query()
+if comparison_targets and len(comparison_targets) >= 2:
+    prefer_combined_rewrites()
+
+# ✅ GOOD – LLM decides
+query = retry_strategy.suggested_query or rewrite_candidates[idx]
+```
+
+## In Prompts (Normalizer, Evidence Evaluator, etc.)
+
+```markdown
+# ❌ BAD – narrow
+- For comparison queries (answer_shape=comparison): put combined rewrites FIRST
+- When comparing Mac vs Linux: suggest "Mac and Linux pricing"
+- For add-on asks: include "IP add-on", "extra IP"
+
+# ✅ GOOD – generic
+- Order retrieval_rewrites by effectiveness. Ensure they cover the full scope of the query.
+- suggested_query: when retry_needed, suggest a clearer query for retrieval
+```
+
+## Checklist
+
+- [ ] Does it name a specific product, language, or tenant?
+- [ ] Does it say "when X do Y" for a narrow case?
+- [ ] Could it apply to other domains without change?
+- [ ] Does it describe purpose/principle instead of prescribing behavior?

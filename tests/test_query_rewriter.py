@@ -76,7 +76,11 @@ async def test_rewrite_for_retrieval_disabled_returns_query_as_is(monkeypatch):
     """When query_rewriter_use_llm=False, return query as-is."""
     monkeypatch.setattr(
         "app.services.query_rewriter.get_settings",
-        lambda: type("S", (), {"query_rewriter_use_llm": False})(),
+        lambda: type("S", (), {
+            "query_rewriter_use_llm": False,
+            "conversation_snippet_max_chars": 500,
+            "conversation_message_content_max_chars": 300,
+        })(),
     )
     result = await rewrite_for_retrieval("vps plans price")
     assert result.keyword_query == "vps plans price"
@@ -95,7 +99,13 @@ async def test_rewrite_for_retrieval_llm_success(monkeypatch):
         lambda: type("S", (), {
             "query_rewriter_use_llm": True,
             "query_rewriter_cache_enabled": False,
+            "conversation_snippet_max_chars": 500,
+            "conversation_message_content_max_chars": 300,
         })(),
+    )
+    monkeypatch.setattr(
+        "app.services.conversation_context.get_settings",
+        lambda: type("S", (), {"conversation_history_max_for_prompt": 8})(),
     )
     with patch("app.services.query_rewriter.get_llm_gateway") as mock_gw:
         mock_chat = AsyncMock(return_value=mock_response)
@@ -115,7 +125,13 @@ async def test_rewrite_for_retrieval_llm_fallback_on_error(monkeypatch):
         lambda: type("S", (), {
             "query_rewriter_use_llm": True,
             "query_rewriter_cache_enabled": False,
+            "conversation_snippet_max_chars": 500,
+            "conversation_message_content_max_chars": 300,
         })(),
+    )
+    monkeypatch.setattr(
+        "app.services.conversation_context.get_settings",
+        lambda: type("S", (), {"conversation_history_max_for_prompt": 8})(),
     )
     with patch("app.services.query_rewriter.get_llm_gateway") as mock_gw:
         mock_gw.return_value.chat = AsyncMock(side_effect=Exception("LLM error"))
@@ -145,7 +161,12 @@ async def test_clear_cache_deletes_query_rewriter_namespace(monkeypatch):
     fake_redis = FakeRedis()
     monkeypatch.setattr(
         "app.services.query_rewriter.get_settings",
-        lambda: type("S", (), {"query_rewriter_cache_enabled": True, "redis_url": "redis://localhost:6379/0"})(),
+        lambda: type("S", (), {
+            "query_rewriter_cache_enabled": True,
+            "redis_url": "redis://localhost:6379/0",
+            "conversation_snippet_max_chars": 500,
+            "conversation_message_content_max_chars": 300,
+        })(),
     )
     with patch("redis.asyncio.from_url", return_value=fake_redis):
         result = await clear_cache()

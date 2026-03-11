@@ -84,7 +84,32 @@ def test_route_pass_weak_for_answerable_refinement_case():
     assert dr.clarifying_questions == ["What budget range do you have in mind?"]
 
 
-def test_route_missing_evidence_quality():
+def test_route_missing_evidence_quality_no_evidence():
+    """When gate fails and no evidence, return ASK_USER."""
+    spec = QuerySpec(
+        intent="transactional",
+        entities=[],
+        constraints={},
+        required_evidence=["numbers_units"],
+        risk_level="low",
+        keyword_queries=["x"],
+        semantic_queries=["x"],
+        clarifying_questions=[],
+        is_ambiguous=False,
+    )
+    report = QualityReport(0.3, {"numbers_units": 0.1}, ["missing_numbers"], None, None)
+    evidence = []
+    dr = route(spec, report, evidence, ["numbers_units"], False)
+    assert dr.decision == "ASK_USER"
+    assert dr.reason == "missing_evidence_quality"
+
+
+def test_route_missing_evidence_quality_with_evidence_fallback_disabled(monkeypatch):
+    """When gate fails and fallback_llm_decides_enabled=False, return ASK_USER."""
+    monkeypatch.setattr(
+        "app.core.config.get_settings",
+        lambda: type("S", (), {"fallback_llm_decides_enabled": False})(),
+    )
     spec = QuerySpec(
         intent="transactional",
         entities=[],
@@ -108,7 +133,38 @@ def test_route_missing_evidence_quality():
     assert "https://example.com/page" in dr.partial_links
 
 
-def test_route_asks_user_when_quality_gate_fails_even_with_partial_coverage():
+def test_route_pass_llm_decides_when_gate_fails_with_evidence(monkeypatch):
+    """When gate fails but evidence exists and fallback enabled, return PASS_LLM_DECIDES."""
+    monkeypatch.setattr(
+        "app.core.config.get_settings",
+        lambda: type("S", (), {"fallback_llm_decides_enabled": True})(),
+    )
+    spec = QuerySpec(
+        intent="transactional",
+        entities=[],
+        constraints={},
+        required_evidence=["numbers_units"],
+        risk_level="low",
+        keyword_queries=["x"],
+        semantic_queries=["x"],
+        clarifying_questions=[],
+        is_ambiguous=False,
+    )
+    report = QualityReport(0.3, {"numbers_units": 0.1}, ["missing_numbers"], None, None)
+    evidence = [
+        EvidenceChunk("c1", "snippet", "https://example.com/page", "pricing", 0.8, "full"),
+    ]
+    dr = route(spec, report, evidence, ["numbers_units"], False)
+    assert dr.decision == "PASS"
+    assert dr.reason == "llm_decides_with_partial"
+    assert dr.lane == "PASS_LLM_DECIDES"
+
+
+def test_route_asks_user_when_quality_gate_fails_even_with_partial_coverage(monkeypatch):
+    monkeypatch.setattr(
+        "app.core.config.get_settings",
+        lambda: type("S", (), {"fallback_llm_decides_enabled": False})(),
+    )
     spec = QuerySpec(
         intent="transactional",
         entities=[],

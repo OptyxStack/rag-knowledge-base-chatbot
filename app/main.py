@@ -42,10 +42,10 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
     settings = get_settings()
-    # Docs: hide in production when docs_enabled=False
+    # Docs: hide interactive UI in production; always serve openapi.json for API clients / in-app ApiReference
     docs_url = "/docs" if settings.docs_enabled else None
     redoc_url = "/redoc" if settings.docs_enabled else None
-    openapi_url = "/openapi.json" if settings.docs_enabled else None
+    openapi_url = "/openapi.json"  # Always serve schema (needed by ApiReference page)
     app = FastAPI(
         title=settings.app_name,
         version="1.0.0",

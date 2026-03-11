@@ -26,6 +26,7 @@ from app.core.tracing import get_trace_id
 from app.db.models import Chunk, Conversation, Message, Citation
 from app.db.session import get_db
 from app.services.answer_service import AnswerService
+from app.services.conversation_context import truncate_for_pipeline
 
 logger = get_logger(__name__)
 
@@ -215,11 +216,12 @@ async def send_message(
         select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at)
     )
     history_msgs = hist_result.scalars().all()
-    conversation_history = [
+    raw_history = [
         {"role": m.role, "content": m.content}
         for m in history_msgs
         if m.id != user_msg.id
-    ][-10:]  # Last 10 for context
+    ]
+    conversation_history = truncate_for_pipeline(raw_history)
 
     # Generate answer (tickets are retrieved via vector/RAG like docs when relevant)
     answer_svc = AnswerService()
@@ -319,11 +321,12 @@ async def send_message_stream(
             select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at)
         )
         history_msgs = hist_result.scalars().all()
-        conversation_history = [
+        raw_history = [
             {"role": m.role, "content": m.content}
             for m in history_msgs
             if m.id != user_msg.id
-        ][-10:]
+        ]
+        conversation_history = truncate_for_pipeline(raw_history)
 
         answer_svc = AnswerService()
         output = await answer_svc.generate(
