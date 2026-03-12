@@ -13,6 +13,10 @@ from typing import Any
 
 from app.core.config import get_settings
 
+
+_PRODUCT_FAMILY_KEYS = ("windows_vps", "kvm_vps", "macos_vps", "dedicated")
+
+
 def _doc_type_from_url(url: str) -> str:
     """Infer doc_type from URL using config-driven keyword mapping."""
     url_lower = url.lower()
@@ -28,6 +32,103 @@ def _doc_type_from_url(url: str) -> str:
     return "other"
 
 
+def _infer_page_kind(
+    *,
+    url: str,
+    doc_type: str,
+    title: str = "",
+    text: str = "",
+) -> str:
+    """Infer lightweight page taxonomy for retrieval weighting."""
+    dt = (doc_type or "").strip().lower()
+    if dt == "conversation" or url.startswith("ticket://"):
+        return "conversation"
+    if dt in {"faq"}:
+        return "faq"
+    if dt in {"howto", "docs"}:
+        return "howto"
+    if dt in {"policy", "tos"}:
+        return "policy"
+    if dt == "blog":
+        return "blog"
+
+    blob = f"{url} {title} {text}".lower()
+    if any(token in blob for token in ("/order", "checkout", "cart", "buy now", "purchase")):
+        return "order_page"
+    if dt == "pricing" or any(token in blob for token in ("pricing", "plans", "price", "/mo")):
+        return "pricing_table"
+    if any(token in blob for token in ("vps", "server", "dedicated", "product")):
+        return "product_page"
+    return "blog"
+
+
+def _normalize_product_family(value: str | None) -> str | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    aliases = {
+        "windows": "windows_vps",
+        "windows_vps": "windows_vps",
+        "windows-rdp": "windows_vps",
+        "rdp": "windows_vps",
+        "kvm": "kvm_vps",
+        "kvm_vps": "kvm_vps",
+        "linux_vps": "kvm_vps",
+        "linux": "kvm_vps",
+        "macos": "macos_vps",
+        "mac": "macos_vps",
+        "macos_vps": "macos_vps",
+        "dedicated": "dedicated",
+        "dedicated_server": "dedicated",
+        "dedicated_servers": "dedicated",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in _PRODUCT_FAMILY_KEYS else None
+
+
+def _infer_product_family(
+    *,
+    url: str,
+    title: str = "",
+    text: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> str | None:
+    """Infer product family taxonomy for lane-aware retrieval."""
+    md = metadata or {}
+    for key in ("product_family", "category", "product", "plan_name"):
+        normalized = _normalize_product_family(md.get(key) if isinstance(md, dict) else None)
+        if normalized:
+            return normalized
+
+    blob = f"{url} {title} {text}".lower()
+    if ("windows" in blob or "rdp" in blob) and "vps" in blob:
+        return "windows_vps"
+    if "kvm" in blob and "vps" in blob:
+        return "kvm_vps"
+    if ("macos" in blob or "mac os" in blob or "apple" in blob) and "vps" in blob:
+        return "macos_vps"
+    if "dedicated" in blob:
+        return "dedicated"
+    return None
+
+
+def _with_taxonomy_metadata(
+    *,
+    url: str,
+    title: str,
+    text: str,
+    doc_type: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    base = dict(metadata or {})
+    page_kind = _infer_page_kind(url=url, doc_type=doc_type, title=title, text=text)
+    product_family = _infer_product_family(url=url, title=title, text=text, metadata=base)
+    base["page_kind"] = page_kind
+    if product_family:
+        base["product_family"] = product_family
+    return base
+
+
 def load_pages_json(path: Path, doc_type_override: str | None = None) -> list[dict[str, Any]]:
     """Load JSON with pages array: [{url, title, text}]. Used by sample_docs.json and {doc_type}.json."""
     with open(path) as f:
@@ -39,12 +140,20 @@ def load_pages_json(path: Path, doc_type_override: str | None = None) -> list[di
         if not url or len(text) < 50:
             continue
         doc_type = doc_type_override or data.get("doc_type") or _doc_type_from_url(url)
+        title = p.get("title", "Untitled")
+        metadata = _with_taxonomy_metadata(
+            url=url,
+            title=title,
+            text=text,
+            doc_type=doc_type,
+            metadata={"source": data.get("source", "")},
+        )
         docs.append({
             "url": url,
-            "title": p.get("title", "Untitled"),
+            "title": title,
             "raw_text": text,
             "doc_type": doc_type,
-            "metadata": {"source": data.get("source", "")},
+            "metadata": metadata,
             "source_file": path.name,
         })
     return docs
@@ -60,12 +169,21 @@ def load_articles_json(path: Path) -> list[dict[str, Any]]:
         snippet = a.get("snippet", "").strip()
         if not url or len(snippet) < 50:
             continue
+        title = a.get("title", "Untitled")
+        doc_type = _doc_type_from_url(url)
+        metadata = _with_taxonomy_metadata(
+            url=url,
+            title=title,
+            text=snippet,
+            doc_type=doc_type,
+            metadata={"key_points": a.get("key_points", [])},
+        )
         docs.append({
             "url": url,
-            "title": a.get("title", "Untitled"),
+            "title": title,
             "raw_text": snippet,
-            "doc_type": _doc_type_from_url(url),
-            "metadata": {"key_points": a.get("key_points", [])},
+            "doc_type": doc_type,
+            "metadata": metadata,
             "source_file": path.name,
         })
     return docs
@@ -92,18 +210,27 @@ def load_plans_json(path: Path) -> list[dict[str, Any]]:
         if plan.get("order_link"):
             text_parts.append(f"Order: {plan['order_link']}")
         text = "\n".join(text_parts)
+        title = f"Plan {plan_name}"
+        metadata = {
+            "product": plan_name,
+            "category": str(plan.get("category") or default_category),
+            "plan_name": plan_name,
+            "price_raw": plan.get("price_raw"),
+            "order_link": plan.get("order_link"),
+        }
+        metadata = _with_taxonomy_metadata(
+            url=url,
+            title=title,
+            text=text,
+            doc_type="pricing",
+            metadata=metadata,
+        )
         docs.append({
             "url": url,
-            "title": f"Plan {plan_name}",
+            "title": title,
             "raw_text": text,
             "doc_type": "pricing",
-            "metadata": {
-                "product": plan_name,
-                "category": str(plan.get("category") or default_category),
-                "plan_name": plan_name,
-                "price_raw": plan.get("price_raw"),
-                "order_link": plan.get("order_link"),
-            },
+            "metadata": metadata,
             "source_file": path.name,
         })
     return docs
@@ -130,16 +257,25 @@ def load_sales_kb_json(path: Path) -> list[dict[str, Any]]:
                 f"{p.get('memory', '')} RAM, {p.get('storage', '')} storage"
             )
         full_text = summary + "\n\nPlans:\n" + "\n".join(plans_text) if plans_text else summary
+        title = cat.get("title", cat.get("category", "Untitled"))
+        metadata = {
+            "product": cat.get("category"),
+            "category": cat.get("category"),
+            "global_highlights": global_highlights[:5],
+        }
+        metadata = _with_taxonomy_metadata(
+            url=url,
+            title=title,
+            text=full_text,
+            doc_type="pricing",
+            metadata=metadata,
+        )
         docs.append({
             "url": url,
-            "title": cat.get("title", cat.get("category", "Untitled")),
+            "title": title,
             "raw_text": full_text,
             "doc_type": "pricing",
-            "metadata": {
-                "product": cat.get("category"),
-                "category": cat.get("category"),
-                "global_highlights": global_highlights[:5],
-            },
+            "metadata": metadata,
             "source_file": path.name,
         })
     return docs
@@ -171,14 +307,22 @@ def load_sample_conversations_json(path: Path) -> list[dict[str, Any]]:
         text = "\n\n".join(parts)
         if len(text) < 50:
             continue
+        title = subject or f"Sample conversation {ticket_id}"
+        metadata_out = _with_taxonomy_metadata(
+            url=url,
+            title=title,
+            text=text,
+            doc_type="conversation",
+            metadata={"conversation_id": str(ticket_id), "source": data.get("source", "")},
+        )
         docs.append({
             "url": url,
             "source_url": url,
-            "title": subject or f"Sample conversation {ticket_id}",
+            "title": title,
             "raw_text": text,
             "content": text,
             "doc_type": "conversation",
-            "metadata": {"conversation_id": str(ticket_id), "source": data.get("source", "")},
+            "metadata": metadata_out,
             "source_file": path.name,
         })
     return docs

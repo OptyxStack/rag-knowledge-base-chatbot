@@ -65,6 +65,7 @@ def build_flow_debug(
     stage_reasons: list[str] | None = None,
     termination_reason: str | None = None,
     hypothesis_judge: dict[str, Any] | None = None,
+    conversation_relevance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build debug dict for flow inspection (internal admin)."""
     debug: dict[str, Any] = {
@@ -192,4 +193,6 @@ def build_flow_debug(
         debug["final_polish_applied"] = True
     if hypothesis_judge:
         debug["hypothesis_judge"] = hypothesis_judge
+    if conversation_relevance:
+        debug["conversation_relevance"] = conversation_relevance
     return debug

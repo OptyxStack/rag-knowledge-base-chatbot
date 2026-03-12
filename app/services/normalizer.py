@@ -8,13 +8,15 @@ Goals:
 - Fallback only when LLM fails (keeps pipeline alive).
 
 Notes:
-- QuerySpec is the retrieval control plane. Prefer explicit retrieval_profile,
-  hard_requirements and doc_type_prior from LLM output when available.
+- QuerySpec remains the retrieval contract, but retrieval_profile/doc_type_prior
+  from LLM are treated as soft hints (especially for exact answer tasks).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from typing import Any
 
 from app.core.config import get_settings
@@ -50,6 +52,44 @@ _ALLOWED_ANSWER_SHAPES = {
     "procedural",
     "bounded_summary",
 }
+_ALLOWED_ANSWER_TYPES = {
+    "direct_link",
+    "pricing",
+    "policy",
+    "troubleshooting",
+    "general",
+    "clarification",
+    "account",
+}
+_ANSWER_TYPE_ALIASES = {
+    "link": "direct_link",
+    "order_link": "direct_link",
+    "buy_link": "direct_link",
+    "price": "pricing",
+    "price_lookup": "pricing",
+    "general_info": "general",
+    "ask_user": "clarification",
+    "ambiguous": "clarification",
+}
+_EXACT_ANSWER_TYPES = {"direct_link", "pricing", "policy"}
+_DEFAULT_ACCEPTABLE_RELATED_TYPES = {
+    "direct_link": ["pricing", "general"],
+    "pricing": ["direct_link", "general"],
+    "policy": ["general"],
+    "troubleshooting": ["general"],
+    "account": ["general"],
+    "general": [],
+    "clarification": [],
+}
+_ANSWER_TYPE_PROFILE_MAP = {
+    "direct_link": "pricing_profile",
+    "pricing": "pricing_profile",
+    "policy": "policy_profile",
+    "troubleshooting": "troubleshooting_profile",
+    "account": "account_profile",
+    "general": "generic_profile",
+    "clarification": "generic_profile",
+}
 _ALLOWED_EVIDENCE_FAMILIES = {
     "pricing_limits",
     "policy_terms",
@@ -66,6 +106,16 @@ _STANDARD_EVIDENCE_TYPES = {
     "transaction_link",
     "steps_structure",
     "has_any_url",
+}
+_VALID_DOC_TYPE_HINTS = {
+    "pricing",
+    "policy",
+    "faq",
+    "howto",
+    "docs",
+    "tos",
+    "conversation",
+    "blog",
 }
 _EVIDENCE_LABEL_ALIASES = {
     "policy": "policy_language",
@@ -85,6 +135,46 @@ _EVIDENCE_LABEL_ALIASES = {
     "links": "has_any_url",
     "url": "has_any_url",
     "urls": "has_any_url",
+}
+_AVAILABILITY_QUERY_PHRASES = {
+    "do you offer",
+    "do u offer",
+    "do you have",
+    "do u have",
+    "is there",
+    "available in",
+    "availability",
+}
+_AVAILABILITY_LOCATION_TERMS = {
+    " singapore",
+    " sg",
+    " region",
+    " location",
+    " datacenter",
+    " data center",
+    " dc1",
+    " dc2",
+    " asia",
+    " apac",
+}
+_AVAILABILITY_PRODUCT_TERMS = {
+    "vps",
+    "server",
+    "hosting",
+    "proxy",
+}
+_POLICY_QUERY_TERMS = {
+    "refund",
+    "policy",
+    "terms",
+    "tos",
+    "allowed",
+    "allow",
+    "prohibited",
+    "banned",
+    "restriction",
+    "restrictions",
+    "eligible",
 }
 
 NORMALIZER_SYSTEM_PROMPT = """You normalize a user's query for a support chatbot.
@@ -113,6 +203,13 @@ Schema:
   "assistant_should_lead": false,
   "evidence_families": [],
   "answer_shape": "direct_lookup|yes_no|recommendation|comparison|procedural|bounded_summary",
+  "answer_type": "direct_link|pricing|policy|troubleshooting|general|clarification|account",
+  "target_entity": "optional entity/page family name",
+  "answer_expectation": "exact|best_effort|clarify_first",
+  "acceptable_related_types": [],
+  "answer_mode": "PASS_EXACT|PASS_PARTIAL|ASK_USER",
+  "support_level": "strong|partial|weak",
+  "blocking_missing_slots": [],
   "primary_hypothesis": {},
   "fallback_hypotheses": [],
 
@@ -122,6 +219,7 @@ Schema:
 
   "skip_retrieval": false,
   "canned_response": "optional when skip_retrieval is true",
+  "out_of_scope": false,
 
   "product_type": null,
   "os": null,
@@ -129,24 +227,23 @@ Schema:
   "billing_cycle": null
 }
 
-Guidance (non-binding):
-- canonical_query_en must be in English (translate if needed). Use conversation context to resolve referents (e.g. "for my window rdp" after "change the default port for" → "How do I change the default port for my Windows RDP?").
-- is_ambiguous: false when the user's message (with context) provides the missing referent. Example: assistant asked "What application?" and user replied "for my Windows RDP" → referent is clear, is_ambiguous=false. Set is_ambiguous=true only when the referent remains unclear.
-- clarifying_questions: legacy compatibility field. When clarification is blocking, mirror blocking_clarifying_questions. When a preliminary answer is possible, it may mirror refinement_questions.
-- answerable_without_clarification: true when you can still give a useful preliminary answer with reasonable assumptions. false only when missing information prevents a useful or safe answer.
-- missing_info_blocking: missing details that prevent answering now.
-- missing_info_for_refinement: missing details that would improve the answer but are not blockers.
-- blocking_clarifying_questions: 1-3 questions only when answerable_without_clarification=false.
-- refinement_questions: optional follow-up questions to refine a preliminary answer when answerable_without_clarification=true.
-- assistant_should_lead: true when the user is asking for a recommendation/default suggestion and the assistant should propose a reasonable starting answer instead of only asking questions.
-- evidence_families: 1-3 broad evidence needs independent of intent, such as pricing_limits, policy_terms, capability_availability, transactional_link, troubleshooting_steps, comparison_analysis, account_access, general_info.
-- answer_shape: the expected answer form, such as yes_no, recommendation, comparison, procedural, direct_lookup, or bounded_summary.
-- primary_hypothesis: the main retrieval/answering hypothesis for this query.
-- fallback_hypotheses: 0-2 alternative hypotheses when the primary evidence family may be wrong or incomplete.
-- skip_retrieval: true when the query is routine and needs no knowledge base (greeting, thanks, bye, simple chitchat). Respond immediately with canned_response.
-- canned_response: when skip_retrieval is true, provide a friendly reply (e.g. greeting "Hello! How can I help you today?").
-- keyword_queries / semantic_queries: focus on the resolved question (1-2 each). Empty when skip_retrieval.
-- retrieval_rewrites: 0-8 short variations for retry. Empty when skip_retrieval. Order by retrieval effectiveness—early rewrites are tried first. Each should match how docs or product pages are phrased. Ensure rewrites cover the full scope of the query (all entities, products, or sides the user asks about).
+Guidance (non-binding, principle-based—infer from user goal, not from keywords):
+- canonical_query_en: English; use conversation context to resolve referents.
+- is_ambiguous: false when context provides the referent; true only when it remains unclear.
+- answerable_without_clarification: true when a useful preliminary answer is possible; false only when missing info prevents a safe answer.
+- evidence_families: 1-3 broad evidence needs. Infer from the user's goal: what do they need to act or decide? (pricing_limits, policy_terms, transactional_link, troubleshooting_steps, comparison_analysis, capability_availability, account_access, general_info). Do not infer from surface keywords.
+- answer_type: the class of information the user needs. Infer from goal: factual (plans, prices, links) → pricing or direct_link; rules/eligibility → policy; steps/how-to → troubleshooting; comparison → general with comparison; unclear → general. Do not infer from keywords.
+- retrieval_profile: the evidence profile that would contain that answer type. Match to answer_type; when evidence_families is set, it drives retrieval. Use generic_profile when the goal is broad or unclear.
+- doc_type_prior: soft hints for where to look; derive from evidence_families and answer_type. Do not prescribe narrow doc types.
+- answer_shape: the expected answer form (yes_no, recommendation, comparison, procedural, direct_lookup, bounded_summary). Infer from goal.
+- answer_expectation: exact for concrete lookup; best_effort for broad asks; clarify_first when blocked.
+- required_evidence: standard types only (policy_language, numbers_units, transaction_link, steps_structure, has_any_url). Infer from what would satisfy the user's goal.
+- retrieval_rewrites: 0-8 variations; order by effectiveness. Cover full scope of the query. Match how docs are phrased.
+- For follow-up queries like "page link", "that link", "link please", "the link": if conversation context clearly identifies the referent (e.g. prior discussion was about Windows VPS, a product, or a page), resolve it. Set keyword_queries and semantic_queries to include the resolved topic (e.g. "Windows VPS page link", "greencloudvps windows vps"). Do not leave them as the raw user phrase when context resolves the referent.
+- retrieval_profile and doc_type_prior are hints; retrieval will broaden when needed.
+- skip_retrieval: true only for routine chitchat (greeting, thanks, bye). canned_response: friendly reply when skip_retrieval.
+- out_of_scope: true when query is not about the support domain (AI self, personal, unrelated topics). Redirect politely.
+- primary_hypothesis / fallback_hypotheses: main and alternative retrieval hypotheses when evidence may be in different families.
 """
 NORMALIZER_SYSTEM_PROMPT = (
     NORMALIZER_SYSTEM_PROMPT
@@ -162,6 +259,14 @@ def _get_greeting_response() -> str:
     if app_name:
         return f"Hello! Welcome to {app_name} support. How can I help you today?"
     return "Hello! Welcome. How can I help you today?"
+
+
+def _get_out_of_scope_response() -> str:
+    """Redirect when query is not about the support domain (AI self, personal, etc.)."""
+    app_name = (get_settings().app_name or "").strip()
+    if app_name:
+        return f"I'm here to help with {app_name} questions—pricing, policies, troubleshooting, and more. How can I assist you today?"
+    return "I'm here to help with product and support questions. How can I assist you today?"
 
 
 def _extract_probable_json(text: str) -> str:
@@ -254,6 +359,216 @@ def _sanitize_risk(v: Any) -> str:
 def _sanitize_answer_shape(v: Any) -> str:
     shape = _as_str(v, "direct_lookup").lower()
     return shape if shape in _ALLOWED_ANSWER_SHAPES else "direct_lookup"
+
+
+def _sanitize_answer_type(v: Any) -> str:
+    raw = _as_str(v, "").lower()
+    normalized = _ANSWER_TYPE_ALIASES.get(raw, raw)
+    if normalized in _ALLOWED_ANSWER_TYPES:
+        return normalized
+    return "general"
+
+
+def _sanitize_answer_expectation(v: Any) -> str:
+    value = _as_str(v, "").lower()
+    if value in {"exact", "best_effort", "clarify_first"}:
+        return value
+    return "best_effort"
+
+
+def _sanitize_answer_mode(v: Any) -> str:
+    value = _as_str(v, "").upper()
+    if value in {"PASS_EXACT", "PASS_PARTIAL", "ASK_USER"}:
+        return value
+    aliases = {
+        "EXACT": "PASS_EXACT",
+        "PARTIAL": "PASS_PARTIAL",
+        "CLARIFY": "ASK_USER",
+    }
+    return aliases.get(value, "PASS_EXACT")
+
+
+def _sanitize_support_level(v: Any) -> str:
+    value = _as_str(v, "").lower()
+    if value in {"strong", "partial", "weak"}:
+        return value
+    return "strong"
+
+
+def _sanitize_doc_type_prior(v: Any) -> list[str]:
+    out: list[str] = []
+    for item in _as_str_list(v, limit=8):
+        normalized = item.lower().strip()
+        if normalized in _VALID_DOC_TYPE_HINTS and normalized not in out:
+            out.append(normalized)
+    return out
+
+
+def _sanitize_acceptable_related_types(v: Any, answer_type: str) -> list[str]:
+    out: list[str] = []
+    for item in _as_str_list(v, limit=6):
+        normalized = _sanitize_answer_type(item)
+        if normalized != answer_type and normalized not in out:
+            out.append(normalized)
+    if not out:
+        out = list(_DEFAULT_ACCEPTABLE_RELATED_TYPES.get(answer_type, []))
+    return out[:4]
+
+
+def _derive_answer_type(*, intent: str, required_evidence: list[str], is_ambiguous: bool) -> str:
+    if is_ambiguous:
+        return "clarification"
+    req = {x.lower() for x in required_evidence}
+    if "transaction_link" in req:
+        return "direct_link"
+    if "policy_language" in req or intent == "policy":
+        return "policy"
+    if "steps_structure" in req or intent == "troubleshooting":
+        return "troubleshooting"
+    if "numbers_units" in req or intent == "transactional":
+        return "pricing"
+    if intent == "account":
+        return "account"
+    return "general"
+
+
+def _derive_answer_expectation(
+    *,
+    answer_type: str,
+    answerable_without_clarification: bool,
+    missing_info_blocking: list[str],
+) -> str:
+    if missing_info_blocking or not answerable_without_clarification:
+        return "clarify_first"
+    if answer_type in _EXACT_ANSWER_TYPES:
+        return "exact"
+    return "best_effort"
+
+
+def _looks_like_availability_query(
+    *,
+    query: str,
+    canonical_query_en: str,
+    entities: list[str],
+    slots: dict[str, Any],
+    intent: str,
+    answer_shape: str,
+) -> bool:
+    text = f" {(canonical_query_en or query or '').strip().lower()} "
+    if not text.strip():
+        return False
+    if intent == "policy" or any(term in text for term in _POLICY_QUERY_TERMS):
+        return False
+
+    entity_blob = " ".join(str(item or "").strip().lower() for item in entities if str(item or "").strip())
+    slot_blob = " ".join(
+        str(slots.get(key, "") or "").strip().lower()
+        for key in ("product_type", "os")
+    ).strip()
+    combined_blob = f"{entity_blob} {slot_blob}".strip()
+    has_product_signal = any(term in combined_blob for term in _AVAILABILITY_PRODUCT_TERMS)
+    has_offer_signal = any(phrase in text for phrase in _AVAILABILITY_QUERY_PHRASES) or " available " in text
+    has_location_signal = any(term in text for term in _AVAILABILITY_LOCATION_TERMS) or " in " in text
+
+    if has_offer_signal and has_product_signal and has_location_signal:
+        return True
+    if answer_shape == "yes_no" and has_product_signal and has_location_signal and ("offer" in text or "have" in text or "available" in text):
+        return True
+    return False
+
+
+def _reprioritize_doc_types_for_availability(doc_type_prior: list[str]) -> list[str]:
+    prioritized = ["pricing", "docs", "faq"]
+    out: list[str] = []
+    for item in [*prioritized, *doc_type_prior]:
+        normalized = str(item or "").strip().lower()
+        if normalized and normalized not in out:
+            out.append(normalized)
+    return out[:8]
+
+
+def _adjust_availability_contract(
+    *,
+    required_evidence: list[str],
+    hard_requirements: list[str],
+    soft_requirements: list[str],
+    answer_shape: str,
+    doc_type_prior: list[str],
+) -> tuple[list[str], list[str], list[str], str, list[str]]:
+    required = [item for item in required_evidence if item != "policy_language"]
+    hard = [item for item in hard_requirements if item != "policy_language"]
+    soft = [item for item in soft_requirements if item != "policy_language"]
+    if "has_any_url" not in soft:
+        soft.append("has_any_url")
+    return (
+        required,
+        hard,
+        soft,
+        "yes_no" if answer_shape != "yes_no" else answer_shape,
+        _reprioritize_doc_types_for_availability(doc_type_prior),
+    )
+
+
+def _derive_answer_mode(
+    *,
+    answerable_without_clarification: bool,
+    answer_mode_hint: str,
+    answer_expectation: str,
+) -> str:
+    if not answerable_without_clarification or answer_mode_hint == "ask_user" or answer_expectation == "clarify_first":
+        return "ASK_USER"
+    if answer_mode_hint == "weak":
+        return "PASS_PARTIAL"
+    return "PASS_EXACT"
+
+
+def _derive_support_level(*, answer_mode: str, hard_requirements: list[str], required_evidence: list[str]) -> str:
+    if answer_mode == "ASK_USER":
+        return "weak"
+    if answer_mode == "PASS_PARTIAL":
+        return "partial"
+    if hard_requirements and len(hard_requirements) >= len(required_evidence or []):
+        return "strong"
+    return "partial" if required_evidence else "strong"
+
+
+def _derive_target_entity(*, payload: dict[str, Any], entities: list[str]) -> str | None:
+    explicit = _as_str(payload.get("target_entity"))
+    if explicit:
+        return explicit
+    if entities:
+        return entities[0]
+    return None
+
+
+def _enforce_exact_task_hints(
+    *,
+    answer_type: str,
+    retrieval_profile: str,
+    doc_type_prior: list[str],
+) -> tuple[str, list[str]]:
+    if answer_type not in _EXACT_ANSWER_TYPES:
+        return retrieval_profile, doc_type_prior
+
+    desired_profile = _ANSWER_TYPE_PROFILE_MAP.get(answer_type, "generic_profile")
+    profile = retrieval_profile or desired_profile
+    if profile != desired_profile:
+        profile = desired_profile
+
+    required_doc_types: list[str] = []
+    if answer_type == "policy":
+        required_doc_types = ["policy", "tos"]
+    elif answer_type == "pricing":
+        required_doc_types = ["pricing", "tos"]
+    elif answer_type == "direct_link":
+        required_doc_types = ["pricing", "docs"]
+
+    merged = list(doc_type_prior)
+    for doc_type in reversed(required_doc_types):
+        if doc_type in merged:
+            merged.remove(doc_type)
+        merged.insert(0, doc_type)
+    return profile, merged[:8]
 
 
 def _sanitize_evidence_families(v: Any, limit: int | None = None) -> list[str]:
@@ -469,7 +784,7 @@ def _parse_hypothesis_list(
         required = _sanitize_evidence_labels(item.get("required_evidence"), limit=10) or list(default_required)
         hard = _sanitize_evidence_labels(item.get("hard_requirements"), limit=10) or list(default_hard)
         soft = _sanitize_evidence_labels(item.get("soft_requirements"), limit=10) or list(default_soft)
-        doc_types = _as_str_list(item.get("doc_type_prior"), limit=8) or list(default_doc_types)
+        doc_types = _sanitize_doc_type_prior(item.get("doc_type_prior")) or list(default_doc_types)
         rewrites = _as_str_list(item.get("rewrite_candidates"), limit=5) or list(default_rewrites)
         out.append(
             _build_hypothesis(
@@ -655,12 +970,13 @@ async def _normalize_llm(
         required_evidence = _sanitize_evidence_labels(payload.get("required_evidence"), limit=10)
         explicit_hard_requirements = _sanitize_evidence_labels(payload.get("hard_requirements"), limit=10)
         explicit_soft_requirements = _sanitize_evidence_labels(payload.get("soft_requirements"), limit=10)
-        doc_type_prior = _as_str_list(payload.get("doc_type_prior"), limit=8)
+        doc_type_prior = _sanitize_doc_type_prior(payload.get("doc_type_prior"))
 
         raw_is_ambiguous = _as_bool(payload.get("is_ambiguous"), False)
         legacy_questions = _as_str_list(payload.get("clarifying_questions"), limit=3)
         missing_info_blocking = _as_str_list(payload.get("missing_info_blocking"), limit=5)
         missing_info_for_refinement = _as_str_list(payload.get("missing_info_for_refinement"), limit=5)
+        blocking_missing_slots = _as_str_list(payload.get("blocking_missing_slots"), limit=8)
         blocking_questions = _as_str_list(payload.get("blocking_clarifying_questions"), limit=3)
         refinement_questions = _as_str_list(payload.get("refinement_questions"), limit=3)
         assistant_should_lead = _as_bool(payload.get("assistant_should_lead"), False)
@@ -679,15 +995,20 @@ async def _normalize_llm(
         if not refinement_questions and answerable_without_clarification:
             refinement_questions = legacy_questions
         clarifying_questions = blocking_questions if not answerable_without_clarification else refinement_questions
+        if not blocking_missing_slots:
+            blocking_missing_slots = list(missing_info_blocking)
 
         keyword_queries = _as_str_list(payload.get("keyword_queries"), limit=2)
         semantic_queries = _as_str_list(payload.get("semantic_queries"), limit=2)
         retrieval_rewrites = _as_str_list(payload.get("retrieval_rewrites"), limit=8)
 
-        skip_retrieval = _as_bool(payload.get("skip_retrieval"), False)
+        out_of_scope = _as_bool(payload.get("out_of_scope"), False)
+        skip_retrieval = _as_bool(payload.get("skip_retrieval"), False) or out_of_scope
         canned_response = _as_str(payload.get("canned_response"))
         if skip_retrieval and not canned_response:
-            canned_response = _get_greeting_response()
+            canned_response = _get_out_of_scope_response() if out_of_scope else _get_greeting_response()
+        elif out_of_scope:
+            canned_response = _get_out_of_scope_response()
 
         # Minimal defaults if LLM omits retrieval phrases
         if not keyword_queries and not skip_retrieval:
@@ -711,12 +1032,12 @@ async def _normalize_llm(
             retrieval_rewrites=retrieval_rewrites,
         )
 
+        intent = "social" if skip_retrieval else _sanitize_intent(payload.get("intent"))
         answer_mode_hint = "strong"
         if not answerable_without_clarification:
             answer_mode_hint = "ask_user"
         elif assistant_should_lead or missing_info_for_refinement or refinement_questions:
             answer_mode_hint = "weak"
-        intent = "social" if skip_retrieval else _sanitize_intent(payload.get("intent"))
         hard_requirements = derive_hard_requirements(
             explicit_hard_requirements,
             required_evidence,
@@ -733,6 +1054,22 @@ async def _normalize_llm(
                 required_evidence=required_evidence,
             )
         )
+        availability_query = _looks_like_availability_query(
+            query=query.strip(),
+            canonical_query_en=canonical_query_en.strip(),
+            entities=entities,
+            slots=slots,
+            intent=intent,
+            answer_shape=answer_shape,
+        )
+        if availability_query:
+            required_evidence, hard_requirements, soft_requirements, answer_shape, doc_type_prior = _adjust_availability_contract(
+                required_evidence=required_evidence,
+                hard_requirements=hard_requirements,
+                soft_requirements=soft_requirements,
+                answer_shape=answer_shape,
+                doc_type_prior=doc_type_prior,
+            )
         evidence_families = _sanitize_evidence_families(payload.get("evidence_families"), limit=3)
         if not evidence_families:
             evidence_families = _infer_evidence_families(
@@ -741,6 +1078,44 @@ async def _normalize_llm(
                 hard_requirements=hard_requirements,
                 answer_shape=answer_shape,
             )
+        answer_type = _sanitize_answer_type(payload.get("answer_type"))
+        if answer_type == "general":
+            answer_type = _derive_answer_type(
+                intent=intent,
+                required_evidence=required_evidence,
+                is_ambiguous=is_ambiguous,
+            )
+        if availability_query and answer_type == "policy":
+            answer_type = "general"
+        target_entity = _derive_target_entity(payload=payload, entities=entities)
+        answer_expectation = _sanitize_answer_expectation(payload.get("answer_expectation"))
+        if not _as_str(payload.get("answer_expectation")):
+            answer_expectation = _derive_answer_expectation(
+                answer_type=answer_type,
+                answerable_without_clarification=answerable_without_clarification,
+                missing_info_blocking=blocking_missing_slots,
+            )
+        if availability_query and answer_expectation == "exact":
+            answer_expectation = "best_effort"
+        acceptable_related_types = _sanitize_acceptable_related_types(
+            payload.get("acceptable_related_types"),
+            answer_type,
+        )
+        answer_mode = _sanitize_answer_mode(payload.get("answer_mode"))
+        if not _as_str(payload.get("answer_mode")):
+            answer_mode = _derive_answer_mode(
+                answerable_without_clarification=answerable_without_clarification,
+                answer_mode_hint=answer_mode_hint,
+                answer_expectation=answer_expectation,
+            )
+        support_level = _sanitize_support_level(payload.get("support_level"))
+        if not _as_str(payload.get("support_level")):
+            support_level = _derive_support_level(
+                answer_mode=answer_mode,
+                hard_requirements=hard_requirements,
+                required_evidence=required_evidence,
+            )
+
         retrieval_profile = sanitize_retrieval_profile(payload.get("retrieval_profile"))
         if not retrieval_profile:
             retrieval_profile = infer_retrieval_profile(
@@ -749,6 +1124,13 @@ async def _normalize_llm(
                 hard_requirements=hard_requirements,
                 evidence_families=evidence_families,
             )
+        if availability_query and retrieval_profile == "policy_profile":
+            retrieval_profile = "generic_profile"
+        retrieval_profile, doc_type_prior = _enforce_exact_task_hints(
+            answer_type=answer_type,
+            retrieval_profile=retrieval_profile,
+            doc_type_prior=doc_type_prior,
+        )
 
         if doc_type_prior:
             constraints = dict(constraints)
@@ -801,6 +1183,7 @@ async def _normalize_llm(
             is_ambiguous=is_ambiguous,
             skip_retrieval=skip_retrieval,
             canned_response=(canned_response if skip_retrieval else None),
+            out_of_scope=out_of_scope,
             original_query=query.strip(),
             source_lang=src_lang,
             translation_needed=translation_needed,
@@ -819,6 +1202,13 @@ async def _normalize_llm(
             soft_requirements=soft_requirements,
             evidence_families=evidence_families,
             answer_shape=answer_shape,
+            answer_type=answer_type,
+            target_entity=target_entity,
+            answer_expectation=answer_expectation,
+            acceptable_related_types=acceptable_related_types,
+            answer_mode=answer_mode,
+            support_level=support_level,
+            blocking_missing_slots=blocking_missing_slots,
             primary_hypothesis=primary_hypothesis,
             fallback_hypotheses=fallback_hypotheses,
             doc_type_prior=doc_type_prior,
@@ -838,6 +1228,9 @@ async def _normalize_llm(
             required_evidence=spec.required_evidence,
             hard_requirements=spec.hard_requirements,
             retrieval_profile=spec.retrieval_profile,
+            answer_type=spec.answer_type,
+            answer_mode=spec.answer_mode,
+            support_level=spec.support_level,
             translated=spec.translation_needed,
             canonical_query_preview=(canonical_query_en[:120] if canonical_query_en else None),
         )
@@ -888,6 +1281,13 @@ def _build_minimal_fallback(query: str, source_lang: str | None = None) -> Query
         config_overrides_applied=[],
         evidence_families=["general_info"],
         answer_shape="direct_lookup",
+        answer_type="general",
+        target_entity=None,
+        answer_expectation="best_effort",
+        acceptable_related_types=[],
+        answer_mode="PASS_EXACT",
+        support_level="partial",
+        blocking_missing_slots=[],
         primary_hypothesis=_build_hypothesis(
             name="primary",
             evidence_families=["general_info"],
@@ -912,9 +1312,49 @@ async def normalize(
 ) -> QuerySpec:
     """Produce QuerySpec from raw query. LLM-led; minimal fallback on error."""
     q = (query or "").strip()
-    spec = await _normalize_llm(q, conversation_history, source_lang=source_lang, locale=locale)
+    settings = get_settings()
+    try:
+        configured_max_attempts = getattr(settings, "normalizer_llm_max_attempts", None)
+        if configured_max_attempts in (None, ""):
+            configured_max_attempts = os.getenv("NORMALIZER_LLM_MAX_ATTEMPTS", 1)
+        max_attempts = max(1, int(configured_max_attempts))
+    except Exception:
+        max_attempts = 1
+    try:
+        configured_backoff = getattr(settings, "normalizer_llm_retry_backoff_ms", None)
+        if configured_backoff in (None, ""):
+            configured_backoff = os.getenv("NORMALIZER_LLM_RETRY_BACKOFF_MS", 0)
+        retry_backoff_ms = max(0, int(configured_backoff))
+    except Exception:
+        retry_backoff_ms = 0
+
+    spec: QuerySpec | None = None
+    for attempt in range(1, max_attempts + 1):
+        spec = await _normalize_llm(
+            q,
+            conversation_history,
+            source_lang=source_lang,
+            locale=locale,
+        )
+        if spec is not None:
+            if attempt > 1:
+                logger.info(
+                    "normalizer_llm_retry_success",
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    query_preview=q[:80],
+                )
+            return spec
+        if attempt < max_attempts:
+            logger.warning(
+                "normalizer_llm_retrying",
+                next_attempt=attempt + 1,
+                max_attempts=max_attempts,
+                query_preview=q[:80],
+            )
+            if retry_backoff_ms > 0:
+                await asyncio.sleep((retry_backoff_ms * attempt) / 1000.0)
     if spec is not None:
         return spec
     logger.warning("normalizer_llm_fallback", reason="llm_failed", query_preview=q[:80])
     return _build_minimal_fallback(q, source_lang)
-

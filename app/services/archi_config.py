@@ -28,6 +28,7 @@ CONFIG_KEYS = (
     "final_polish_enabled",
     "doc_type_classifier_enabled",
     "retrieval_doc_type_use_llm",
+    "page_kind_filter_enabled",
     "llm_model_economy",
     "llm_task_aware_routing_enabled",
 )
@@ -146,6 +147,13 @@ def get_retrieval_doc_type_use_llm() -> bool:
     if "retrieval_doc_type_use_llm" in _cache:
         return _cache["retrieval_doc_type_use_llm"]
     return getattr(get_settings(), "retrieval_doc_type_use_llm", False)
+
+
+def get_page_kind_filter_enabled() -> bool:
+    """Filter retrieval by page_kind (howto, faq, etc.). Disable when chunks lack page_kind. From DB or env."""
+    if "page_kind_filter_enabled" in _cache:
+        return _cache["page_kind_filter_enabled"]
+    return getattr(get_settings(), "page_kind_filter_enabled", False)
 
 
 def get_llm_model_economy() -> str:

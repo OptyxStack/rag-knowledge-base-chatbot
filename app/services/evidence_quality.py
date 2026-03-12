@@ -1,13 +1,4 @@
-"""
-Evidence Quality Gate — flexible, LLM-led.
-
-Design goals:
-- LLM makes the relevance/sufficiency judgment (pass + confidence + reason + gaps).
-- No keyword rules / string checks to decide PASS.
-- "Hard requirements" are enforced deterministically ONLY by reading the LLM's own
-  coverage booleans (contract-style). This keeps flexibility while preventing
-  silent override.
-"""
+"""Evidence Quality Gate - flexible, LLM-led."""
 
 from __future__ import annotations
 
@@ -26,45 +17,54 @@ logger = get_logger(__name__)
 @dataclass
 class QualityReport:
     """Explainable quality report from LLM."""
-    quality_score: float  # 0–1 (LLM confidence)
+
+    quality_score: float
     feature_scores: dict[str, float]
-    missing_signals: list[str]  # "gaps" from LLM
+    missing_signals: list[str]
     staleness_risk: float | None
     boilerplate_risk: float | None
     sufficiency_scores: dict[str, float] | None = None
     hard_requirement_coverage: dict[str, bool] | None = None
+    completeness_score: float | None = None
+    actionability_score: float | None = None
     gate_pass: bool | None = None
     reason: str | None = None
 
 
-EVIDENCE_QUALITY_PROMPT = """You judge whether the provided evidence is sufficient to answer the query.
+EVIDENCE_QUALITY_PROMPT = """You judge whether provided evidence is sufficient for a support answer.
 
 Output MUST be exactly this JSON object. No markdown, no code fences, no extra text.
 {
   "is_sufficient": true,
   "confidence": 0.8,
+  "completeness": 0.8,
+  "actionability": 0.8,
   "reason": "Brief reason.",
   "gaps": [],
   "coverage": {}
 }
 
 Field rules (strict):
-- is_sufficient: boolean true or false only. true = evidence allows a useful answer. false = evidence vague, silent on topic, or contradictory.
+- is_sufficient: boolean true or false only. true means evidence supports a useful and actionable answer now.
 - confidence: number 0.0 to 1.0
+- completeness: number 0.0 to 1.0. 1.0 means evidence covers major options/details needed by the query.
+- actionability: number 0.0 to 1.0. 1.0 means user can act now (clear steps/options/links/policies).
 - reason: one short sentence
 - gaps: array of strings, empty when is_sufficient=true
-- coverage: object mapping requirement names to boolean. Use hint's required_evidence keys if provided.
+- coverage: object mapping requirement names to boolean. Use hint.required_evidence keys when available.
 
-Critical: Set is_sufficient=true when evidence contains content that directly addresses the query. This includes: explicit facts (yes/no, policy, eligibility), how-to guides or steps, support ticket replies with actionable steps, or a bounded set of options. The answer need not be a single yes/no—procedural answers (steps, options, common fixes) are sufficient. Set false only when evidence is vague, silent on the topic, or contradictory. When conversation context is provided, consider it as additional evidence—prior answers may contain facts the assistant can build on for follow-up questions.
+Judgment guidance:
+- Evaluate sufficiency in context, not by keyword overlap. Ask: is this evidence sufficient for a complete, actionable answer?
+- If query expects comparison/recommendation/procedural guidance, check whether evidence covers major options or explicitly states limits.
+- Prefer structured documentation for decisive coverage. Conversation can support but should not be treated as complete when structured docs indicate broader options.
+- Set false when evidence is vague, contradictory, not actionable, or too incomplete for a practical answer.
+
+Actionability: evidence is actionable when the user can act now - clear steps, links, options, or policy clauses. Incomplete when only one path is shown but structured docs indicate multiple valid paths.
+
+Coverage guidance:
+- If policy evidence states exclusions, treat promo/discount/special-offer wording as synonymous for coverage.
+- For policy/refund questions: if policy_language evidence directly answers the query, mark sufficient and set coverage accordingly.
 """
-
-EVIDENCE_QUALITY_PROMPT = (
-    EVIDENCE_QUALITY_PROMPT
-    + "\n"
-    + "Coverage guidance:\n"
-    + "- When policy evidence states an exclusion (for example, discounted plans excluded), treat promo/discount/special-offer wording as synonymous for coverage.\n"
-    + "- For policy/refund questions: if policy_language evidence directly answers the question, set is_sufficient=true and coverage accordingly; do not require an extra product-detail requirement.\n"
-)
 
 
 def _build_fail_report(hard_requirements: list[str] | None) -> QualityReport:
@@ -73,27 +73,25 @@ def _build_fail_report(hard_requirements: list[str] | None) -> QualityReport:
     return QualityReport(
         quality_score=0.0,
         feature_scores={},
-        missing_signals=["missing_evidence"] if hard_reqs else ["missing_evidence"],
+        missing_signals=["missing_evidence"],
         staleness_risk=None,
         boilerplate_risk=None,
         sufficiency_scores=None,
         hard_requirement_coverage=hard_coverage,
+        completeness_score=0.0,
+        actionability_score=0.0,
         gate_pass=False,
         reason="No evidence chunks provided.",
     )
 
 
 def _extract_probable_json(text: str) -> str:
-
     s = (text or "").strip()
 
-    # Strip simple code fences if present
     if s.startswith("```"):
-        # remove first fence line
         first_nl = s.find("\n")
         if first_nl != -1:
             s = s[first_nl + 1 :]
-        # remove trailing fence
         last = s.rfind("```")
         if last != -1:
             s = s[:last].strip()
@@ -106,7 +104,7 @@ def _extract_probable_json(text: str) -> str:
     if 0 <= start < end:
         return s[start : end + 1].strip()
 
-    return s  # last resort
+    return s
 
 
 def _coerce_bool(v: Any) -> bool | None:
@@ -148,6 +146,7 @@ async def evaluate_quality(
     hard_requirements: list[str] | None = None,
     product_type: str | None = None,
     conversation_history: list[dict[str, str]] | None = None,
+    context: dict[str, Any] | None = None,
 ) -> QualityReport:
     hard_reqs = list(dict.fromkeys(hard_requirements or []))
     reqs = list(dict.fromkeys(required_evidence or []))
@@ -182,8 +181,16 @@ async def evaluate_quality(
     if product_type:
         hint["product_type"] = product_type
 
+    doc_type_counts: dict[str, int] = {}
+    for c in chunks:
+        dt = (c.doc_type or "unknown").strip().lower() or "unknown"
+        doc_type_counts[dt] = doc_type_counts.get(dt, 0) + 1
+    hint["evidence_doc_type_counts"] = doc_type_counts
+
     if hint:
         user_content += "\n\nHint (query context): " + json.dumps(hint, ensure_ascii=False)
+    if context:
+        user_content += "\n\nAssessment context: " + json.dumps(context, ensure_ascii=False)
 
     try:
         from app.core.tracing import current_llm_task_var
@@ -201,14 +208,13 @@ async def evaluate_quality(
             ],
             temperature=0.0,
             model=model,
-            max_tokens=256,
+            max_tokens=320,
         )
 
         raw = (resp.content or "").strip()
         text = _extract_probable_json(raw)
         data = json.loads(text)
 
-        # Debug: log raw LLM output when tracing evidence_quality verdict
         logger.debug(
             "evidence_quality_llm_raw",
             raw_preview=raw[:500] if raw else "",
@@ -218,23 +224,22 @@ async def evaluate_quality(
 
         llm_pass = _coerce_bool(data.get("is_sufficient", data.get("pass")))
         confidence = _coerce_float(data.get("confidence"), default=0.5)
+        completeness = _coerce_float(data.get("completeness"), default=confidence)
+        actionability = _coerce_float(data.get("actionability"), default=confidence)
         reason = str(data.get("reason") or "").strip() or None
 
-        gaps = _to_str_list(data.get("gaps"))
+        gaps = _to_str_list(data.get("gaps") or data.get("missing_signals"))
         coverage_raw = data.get("coverage") or {}
         if not isinstance(coverage_raw, dict):
             coverage_raw = {}
 
-        # Only accept boolean coverage values
         coverage: dict[str, bool] = {}
         for k, v in coverage_raw.items():
             if isinstance(k, str) and isinstance(v, bool):
                 coverage[k] = v
 
-        # Ensure hard req keys exist (missing => False)
         hard_coverage = {req: bool(coverage.get(req, False)) for req in hard_reqs}
 
-        # Hygiene signals (telemetry only; not used to flip pass)
         boilerplate_risk: float | None = None
         try:
             sigs = compute_hygiene(chunks)
@@ -250,6 +255,8 @@ async def evaluate_quality(
             boilerplate_risk=boilerplate_risk,
             sufficiency_scores=None,
             hard_requirement_coverage=hard_coverage,
+            completeness_score=round(completeness, 3),
+            actionability_score=round(actionability, 3),
             gate_pass=bool(llm_pass) if llm_pass is not None else None,
             reason=reason,
         )
@@ -266,12 +273,13 @@ def passes_quality_gate(
     hard_requirements: list[str] | None = None,
 ) -> bool:
     """
-    PASS behavior (flexible):
+    PASS behavior:
     - If gate disabled => True
-    - Else:
-      - Enforce hard_requirements deterministically using LLM's own coverage booleans.
-      - Use LLM's pass/fail as the main verdict.
+    - Else enforce hard requirements from LLM coverage and use LLM pass/fail as primary
     """
+    _ = required_evidence
+    _ = thresholds
+
     settings = get_settings()
     if not getattr(settings, "evidence_quality_enabled", True):
         return True
@@ -280,16 +288,20 @@ def passes_quality_gate(
     hard_cov = report.hard_requirement_coverage or {}
     hard_ok = all(hard_cov.get(req) is True for req in hard_reqs) if hard_reqs else True
 
-    # Main verdict from LLM
     if report.gate_pass is not None:
-        # When gate_pass=True and no coverage data, trust LLM (backward compat)
         if report.gate_pass and not hard_cov and hard_reqs:
             return True
         return bool(report.gate_pass) and hard_ok
 
-    # gate_pass is None: use hard_coverage as primary fallback (contract-style)
     if hard_reqs and hard_ok:
         return True
+
     agg_thresh = getattr(settings, "evidence_quality_threshold", 0.6)
     conf_ok = (report.quality_score or 0.0) >= float(agg_thresh)
-    return conf_ok and hard_ok
+    min_completeness = float(getattr(settings, "evidence_quality_min_completeness", 0.35) or 0.35)
+    completeness_ok = (
+        report.completeness_score is None
+        or float(report.completeness_score) >= min_completeness
+    )
+    return conf_ok and hard_ok and completeness_ok
+

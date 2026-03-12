@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 def _clean_html(html: str, base_url: str | None = None) -> str:
     """Strip boilerplate and extract text from HTML. Preserves links as text (href in content)."""
     soup = BeautifulSoup(html, "lxml")
-    for tag in soup(["script", "style", "nav", "footer", "header"]):
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
         tag.decompose()
 
     # Preserve <a href> as text so links appear in content (for evidence quality, citations)

@@ -56,6 +56,7 @@ class QuerySpec:
     is_ambiguous: bool = False  # True when referent unclear (e.g. "what diff from this?")
     skip_retrieval: bool = False  # True when no retrieval needed (greeting, social)
     canned_response: str | None = None  # When skip_retrieval, use this (no LLM)
+    out_of_scope: bool = False  # True when query is not about support domain (AI self, personal, etc.)
     canonical_query_en: str | None = None  # English translation when source was non-English (archi_v3)
     original_query: str | None = None  # Raw user input before translation / rewriting
     source_lang: str = "en"  # Detected source language
@@ -75,14 +76,30 @@ class QuerySpec:
     soft_requirements: list[str] | None = None  # Nice-to-have evidence for a stronger answer
     evidence_families: list[str] | None = None  # capability_availability | pricing_limits | policy_terms | ...
     answer_shape: str = "direct_lookup"  # direct_lookup | yes_no | recommendation | comparison | procedural | bounded_summary
+    answer_type: str = "general"  # direct_link | pricing | policy | troubleshooting | general | clarification | account
+    target_entity: str | None = None  # Primary entity/page family user expects (e.g. windows_vps, refund_policy)
+    answer_expectation: str = "best_effort"  # exact | best_effort | clarify_first
+    acceptable_related_types: list[str] | None = None  # Optional secondary acceptable answer types
+    answer_mode: str = "PASS_EXACT"  # PASS_EXACT | PASS_PARTIAL | ASK_USER
+    support_level: str = "strong"  # strong | partial | weak
+    blocking_missing_slots: list[str] | None = None  # Canonical missing slots that block exact answers
     primary_hypothesis: HypothesisSpec | None = None
     fallback_hypotheses: list[HypothesisSpec] | None = None
-    doc_type_prior: list[str] | None = None  # Preferred doc types for retrieval (authoritative if provided)
+    doc_type_prior: list[str] | None = None  # Preferred doc types for retrieval (soft hint, not hard routing)
     retrieval_profile: str = "generic_profile"  # pricing_profile | policy_profile | troubleshooting_profile | ...
     rewrite_candidates: list[str] | None = None  # Fallback rewritten queries for retrieval retry
     answer_mode_hint: str = "strong"  # strong | weak | ask_user
     extraction_mode: str = "rule_primary"  # llm_primary | rule_primary | rule_fallback
     config_overrides_applied: list[str] | None = None  # Enabled normalizer compatibility switches
+
+
+@dataclass
+class RelevanceCheckResult:
+    """Result of conversation history relevance check (before generate)."""
+
+    relevant: bool
+    reason: str = ""
+    relevant_turn_count: int | str = "all"  # 0, 1, 2, ... or "all"
 
 
 @dataclass
@@ -95,7 +112,7 @@ class DecisionResult:
     partial_links: list[str]  # for ASK_USER (evidence gap) – useful links to show
     answer: str = ""  # pre-generated response for ASK_USER/ESCALATE (no LLM call)
     answer_policy: str = "direct"  # direct | bounded | clarify | human_handoff
-    lane: str | None = None  # PASS_STRONG | PASS_WEAK | ASK_USER | ESCALATE
+    lane: str | None = None  # CANDIDATE_VERIFY | TARGETED_RETRY | PASS_EXACT | PASS_PARTIAL | ASK_USER | ESCALATE
 
     def resolved_lane(self) -> str:
         """Return explicit lane, defaulting to the legacy decision field."""
@@ -224,6 +241,28 @@ class AnswerDraft:
     citations: list[dict[str, Any]]
     confidence_band: str  # high | medium | low
     raw_text: str
+
+
+@dataclass
+class AnswerCandidate:
+    """Structured answer candidate before calibration and rendering."""
+
+    answer_type: str
+    target_entity: str | None = None
+    answer_expectation: str = "best_effort"
+    acceptable_related_types: list[str] = field(default_factory=list)
+    answer_mode: str = "PASS_EXACT"
+    support_level: str = "strong"
+    answer_text: str = ""
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    confidence: float = 0.0
+    followup_questions: list[str] = field(default_factory=list)
+    disclaimers: list[str] = field(default_factory=list)
+    advice_enabled: bool = False
+    advice_text: str = ""
+    advice_basis: list[str] = field(default_factory=list)
+    advice_confidence: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

@@ -494,6 +494,7 @@ async def get_archi_config(_auth: str = Depends(verify_admin_api_key)):
         get_language_detect_enabled,
         get_llm_model_economy,
         get_llm_task_aware_routing_enabled,
+        get_page_kind_filter_enabled,
         get_retrieval_doc_type_use_llm,
         get_self_critic_enabled,
     )
@@ -508,6 +509,7 @@ async def get_archi_config(_auth: str = Depends(verify_admin_api_key)):
         final_polish_enabled=get_final_polish_enabled(),
         doc_type_classifier_enabled=get_doc_type_classifier_enabled(),
         retrieval_doc_type_use_llm=get_retrieval_doc_type_use_llm(),
+        page_kind_filter_enabled=get_page_kind_filter_enabled(),
         llm_model_economy=get_llm_model_economy(),
         llm_task_aware_routing_enabled=get_llm_task_aware_routing_enabled(),
     )
@@ -533,6 +535,7 @@ async def update_archi_config(
         ("final_polish_enabled", body.final_polish_enabled, True),
         ("doc_type_classifier_enabled", body.doc_type_classifier_enabled, True),
         ("retrieval_doc_type_use_llm", body.retrieval_doc_type_use_llm, True),
+        ("page_kind_filter_enabled", body.page_kind_filter_enabled, True),
         ("llm_model_economy", body.llm_model_economy, False),
         ("llm_task_aware_routing_enabled", body.llm_task_aware_routing_enabled, True),
     ]
@@ -561,6 +564,7 @@ async def update_archi_config(
         get_language_detect_enabled,
         get_llm_model_economy,
         get_llm_task_aware_routing_enabled,
+        get_page_kind_filter_enabled,
         get_retrieval_doc_type_use_llm,
         get_self_critic_enabled,
     )
@@ -575,6 +579,7 @@ async def update_archi_config(
         final_polish_enabled=get_final_polish_enabled(),
         doc_type_classifier_enabled=get_doc_type_classifier_enabled(),
         retrieval_doc_type_use_llm=get_retrieval_doc_type_use_llm(),
+        page_kind_filter_enabled=get_page_kind_filter_enabled(),
         llm_model_economy=get_llm_model_economy(),
         llm_task_aware_routing_enabled=get_llm_task_aware_routing_enabled(),
     )

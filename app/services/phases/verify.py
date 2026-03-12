@@ -30,6 +30,7 @@ def _run_hypothesis_judge(ctx: OrchestratorContext) -> dict | None:
 async def execute_verify(ctx: OrchestratorContext, *, reviewer) -> PhaseResult:
     """Run reviewer gate on generated answer."""
     dr = ctx.decision_result
+    query_spec = ctx.query_spec
     reviewer_decision = (ctx.generated_decision or ctx.extra.get("generated_decision") or "PASS").upper()
     if reviewer_decision not in {"PASS", "ASK_USER", "ESCALATE"}:
         reviewer_decision = "PASS"
@@ -44,6 +45,27 @@ async def execute_verify(ctx: OrchestratorContext, *, reviewer) -> PhaseResult:
         max_attempts=ctx.max_attempts,
         answer_policy=dr.answer_policy if dr else "direct",
         lane=dr.resolved_lane() if dr else None,
+        expected_answer_type=(getattr(query_spec, "answer_type", None) if query_spec else None),
+        acceptable_related_types=(
+            list(getattr(query_spec, "acceptable_related_types", None) or [])
+            if query_spec
+            else []
+        ),
+        answer_expectation=(
+            str(getattr(query_spec, "answer_expectation", "best_effort") or "best_effort")
+            if query_spec
+            else "best_effort"
+        ),
+        target_entity=(
+            str(getattr(query_spec, "target_entity", "") or "").strip() or None
+            if query_spec
+            else None
+        ),
+        answer_candidate=(
+            dict(ctx.extra.get("answer_candidate"))
+            if isinstance(ctx.extra.get("answer_candidate"), dict)
+            else None
+        ),
     )
     status = getattr(reviewer_result, "status", None)
     hypothesis_judge = _run_hypothesis_judge(ctx)

@@ -5,18 +5,21 @@ from openai import AsyncOpenAI
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.search.base import EmbeddingProvider
+from app.services.llm_config import get_llm_api_key, get_llm_base_url
 
 logger = get_logger(__name__)
 
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
-    """OpenAI embeddings."""
+    """OpenAI embeddings. Uses same API key/base_url as LLM (DB + env) for consistency."""
 
     def __init__(self) -> None:
         self._settings = get_settings()
-        kwargs: dict = {"api_key": self._settings.openai_api_key}
-        if self._settings.openai_base_url:
-            kwargs["base_url"] = self._settings.openai_base_url.rstrip("/")
+        api_key = get_llm_api_key()
+        base_url = get_llm_base_url()
+        kwargs: dict = {"api_key": api_key}
+        if base_url and base_url.strip():
+            kwargs["base_url"] = base_url.strip().rstrip("/")
         self._client = AsyncOpenAI(**kwargs)
 
     async def embed(self, texts: list[str]) -> list[list[float]]:

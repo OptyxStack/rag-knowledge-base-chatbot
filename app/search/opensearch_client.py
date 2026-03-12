@@ -82,6 +82,8 @@ DEFAULT_INDEX_SETTINGS: dict[str, Any] = {
             "chunk_id": {"type": "keyword"},
             "document_id": {"type": "keyword"},
             "doc_type": {"type": "keyword"},
+            "page_kind": {"type": "keyword"},
+            "product_family": {"type": "keyword"},
             "source_url": {"type": "keyword"},
             "effective_date": {"type": "date"},
             # Text fields for BM25.
@@ -220,6 +222,7 @@ class OpenSearchClient:
         source_url: str,
         effective_date: str | None,
         chunk_text: str,
+        metadata: dict[str, Any] | None = None,
         *,
         refresh: str | bool | None = None,
     ) -> None:
@@ -244,6 +247,11 @@ class OpenSearchClient:
             "effective_date": effective_date,
             "chunk_text": chunk_text,
         }
+        if isinstance(metadata, dict):
+            if metadata.get("page_kind"):
+                doc["page_kind"] = str(metadata.get("page_kind")).strip().lower()
+            if metadata.get("product_family"):
+                doc["product_family"] = str(metadata.get("product_family")).strip().lower()
 
         kwargs: dict[str, Any] = {}
         if refresh is not None:
@@ -351,6 +359,10 @@ class OpenSearchClient:
         recency_scale: str = "45d",
         min_should_match: str = "70%",
         fuzziness: str | None = "AUTO",
+        page_kinds: list[str] | None = None,
+        product_families: list[str] | None = None,
+        page_kind_weights: dict[str, float] | None = None,
+        product_family_weights: dict[str, float] | None = None,
     ) -> list[SearchChunk]:
         """
         BM25 search with a more robust query structure.
@@ -366,6 +378,14 @@ class OpenSearchClient:
         filters: list[dict[str, Any]] = []
         if doc_types:
             filters.append({"terms": {"doc_type": doc_types}})
+        if page_kinds:
+            normalized_page_kinds = [str(k).strip().lower() for k in page_kinds if str(k).strip()]
+            if normalized_page_kinds:
+                filters.append({"terms": {"page_kind": normalized_page_kinds}})
+        if product_families:
+            normalized_families = [str(k).strip().lower() for k in product_families if str(k).strip()]
+            if normalized_families:
+                filters.append({"terms": {"product_family": normalized_families}})
 
         # Stronger-than-MVP query:
         # - best_fields for general matching (MSM helps long queries)
@@ -420,6 +440,30 @@ class OpenSearchClient:
         # Business-aware boosts
         if boost_pricing:
             base_bool["should"].append({"term": {"doc_type": {"value": "pricing", "boost": 2.0}}})
+        if page_kind_weights:
+            for page_kind, weight in page_kind_weights.items():
+                kind = str(page_kind).strip().lower()
+                if not kind:
+                    continue
+                try:
+                    boost = float(weight)
+                except (TypeError, ValueError):
+                    continue
+                if boost <= 0:
+                    continue
+                base_bool["should"].append({"term": {"page_kind": {"value": kind, "boost": boost}}})
+        if product_family_weights:
+            for family, weight in product_family_weights.items():
+                normalized = str(family).strip().lower()
+                if not normalized:
+                    continue
+                try:
+                    boost = float(weight)
+                except (TypeError, ValueError):
+                    continue
+                if boost <= 0:
+                    continue
+                base_bool["should"].append({"term": {"product_family": {"value": normalized, "boost": boost}}})
 
         # Function score: recency boost using effective_date (if present).
         # This helps prevent outdated policy/pricing chunks outranking newer ones.
@@ -445,7 +489,17 @@ class OpenSearchClient:
         body: dict[str, Any] = {
             "size": top_n,
             "query": query_body,
-            "_source": ["chunk_id", "document_id", "chunk_text", "source_url", "doc_type", "effective_date", "title"],
+            "_source": [
+                "chunk_id",
+                "document_id",
+                "chunk_text",
+                "source_url",
+                "doc_type",
+                "page_kind",
+                "product_family",
+                "effective_date",
+                "title",
+            ],
         }
 
         if use_highlight:

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.llm_config import get_llm_fallback_model, get_llm_model
 from app.services.model_router import get_model_for_task
@@ -164,6 +165,9 @@ def _reviewer_status_to_str(reviewer_result: Any) -> str | None:
     return str(status.value) if hasattr(status, "value") else str(status)
 
 
+_VERIFY_REPAIR_RETRY_REASONS = {"type_mismatch", "overclaim", "unsupported_exact"}
+
+
 class Orchestrator:
     """State machine orchestrator for support flow. Drives pipeline per strategy."""
 
@@ -172,6 +176,7 @@ class Orchestrator:
         primary_model: str | None = None,
         fallback_model: str | None = None,
     ):
+        self._settings = get_settings()
         self.primary_model = primary_model or get_llm_model()
         self.fallback_model = fallback_model or get_llm_fallback_model()
         self.models = [self.primary_model, self.fallback_model]
@@ -184,6 +189,39 @@ class Orchestrator:
         """Task-aware routing: primary for generate/self_critic, economy for rest."""
         _ = query
         return get_model_for_task(task)
+
+    def _schedule_verify_targeted_retry(
+        self,
+        ctx: OrchestratorContext,
+        reviewer_result: Any,
+    ) -> bool:
+        """Schedule one targeted retry after verify when failure is retryable."""
+        if not bool(getattr(self._settings, "targeted_retry_enabled", True)):
+            return False
+        if reviewer_result is None:
+            return False
+        if not ctx.can_retry():
+            return False
+        if bool(ctx.extra.get("verify_targeted_retry_used")):
+            return False
+
+        retry_reason = str(getattr(reviewer_result, "retry_reason", "") or "").strip().lower()
+        if retry_reason not in _VERIFY_REPAIR_RETRY_REASONS:
+            return False
+        suggested_queries = [
+            str(q).strip()
+            for q in (getattr(reviewer_result, "suggested_queries", None) or [])
+            if str(q).strip()
+        ]
+        if not suggested_queries:
+            return False
+
+        ctx.retry_query_override = suggested_queries[0]
+        ctx.extra["verify_targeted_retry_pending"] = True
+        ctx.extra["verify_targeted_retry_used"] = True
+        ctx.extra["verify_targeted_retry_reason"] = retry_reason
+        ctx.extra["verify_targeted_retry_queries"] = suggested_queries[:3]
+        return True
 
     def next_action(
         self,
@@ -217,8 +255,19 @@ class Orchestrator:
 
         if ctx.state == OrchestratorState.DECIDING:
             lane = ctx.current_lane()
-            if lane in ("PASS_STRONG", "PASS_WEAK", "PASS", "PASS_LLM_DECIDES"):
+            if lane in (
+                "CANDIDATE_VERIFY",
+                "PASS_EXACT",
+                "PASS_PARTIAL",
+                "PASS",
+            ):
                 return OrchestratorAction.GENERATE
+            if lane == "TARGETED_RETRY":
+                if not bool(getattr(self._settings, "targeted_retry_enabled", True)):
+                    return OrchestratorAction.ASK_USER
+                if ctx.can_retry():
+                    return OrchestratorAction.RETRY_RETRIEVE
+                return OrchestratorAction.ASK_USER
             if lane == "ESCALATE":
                 return OrchestratorAction.ESCALATE
             if lane == "ASK_USER":
@@ -238,6 +287,8 @@ class Orchestrator:
             if reviewer_status == "ESCALATE":
                 return OrchestratorAction.ESCALATE
             if reviewer_status == "ASK_USER":
+                if bool(ctx.extra.get("verify_targeted_retry_pending")):
+                    return OrchestratorAction.RETRY_RETRIEVE
                 return OrchestratorAction.ASK_USER
             return OrchestratorAction.ASK_USER
 
@@ -318,7 +369,21 @@ class Orchestrator:
             if status_str == "TRIM_UNSUPPORTED" and getattr(rr, "trimmed_answer", None):
                 ctx.answer = rr.trimmed_answer
             if status_str == "DOWNGRADE_LANE":
-                ctx.answer_lane = getattr(rr, "final_lane", None) or "PASS_WEAK"
+                if getattr(rr, "trimmed_answer", None):
+                    ctx.answer = rr.trimmed_answer
+                ctx.answer_lane = getattr(rr, "final_lane", None) or "PASS_PARTIAL"
+            if status_str == "PASS" and getattr(rr, "final_lane", None):
+                ctx.answer_lane = rr.final_lane
+            calibrated_confidence = getattr(rr, "calibrated_confidence", None)
+            if isinstance(calibrated_confidence, (int, float)):
+                ctx.confidence = max(0.0, min(1.0, float(calibrated_confidence)))
+            if status_str == "ASK_USER":
+                scheduled = self._schedule_verify_targeted_retry(ctx, rr)
+                if scheduled:
+                    ctx.add_stage_reason(
+                        "verify_repair",
+                        f"targeted_retry:{ctx.extra.get('verify_targeted_retry_reason', 'unknown')}",
+                    )
             ctx.review_result = ReviewResult(
                 status=schema_status,
                 unsupported_claims=getattr(rr, "unsupported_claims", None) or getattr(rr, "missing_fields", []) or [],
@@ -333,6 +398,7 @@ class Orchestrator:
             ctx.add_stage_reason("verify", _reviewer_status_to_str(rr) or "unknown")
 
         elif action == OrchestratorAction.RETRY_RETRIEVE:
+            ctx.extra["verify_targeted_retry_pending"] = False
             ctx.retrieval_attempt += 1
             ctx.state = OrchestratorState.RETRYING
             ctx.add_stage_reason("retry_retrieve", f"attempt={ctx.retrieval_attempt}")

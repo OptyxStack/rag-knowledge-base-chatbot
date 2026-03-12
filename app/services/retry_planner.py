@@ -18,6 +18,105 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+_ANSWER_TYPE_ALIASES = {
+    "link": "direct_link",
+    "order_link": "direct_link",
+    "buy_link": "direct_link",
+    "price": "pricing",
+}
+
+
+def _normalize_answer_type(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    return _ANSWER_TYPE_ALIASES.get(raw, raw or "general")
+
+
+def _normalize_entity_phrase(value: str | None) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    aliases = {
+        "windows": "windows vps",
+        "windows_vps": "windows vps",
+        "windows-rdp": "windows vps",
+        "kvm": "kvm vps",
+        "kvm_vps": "kvm vps",
+        "linux_vps": "kvm vps",
+        "mac": "macos vps",
+        "macos": "macos vps",
+        "macos_vps": "macos vps",
+        "dedicated_server": "dedicated server",
+        "dedicated_servers": "dedicated server",
+        "refund_policy": "refund policy",
+    }
+    text = aliases.get(text, text)
+    return text.replace("_", " ").replace("-", " ").strip()
+
+
+def plan_targeted_retry_queries(
+    *,
+    expected_answer_type: str | None,
+    target_entity: str | None,
+    query: str,
+    max_queries: int = 3,
+) -> list[str]:
+    """Build focused retry queries from verifier failure reason/context.
+
+    Used by Phase 5 repair loop after verify when candidate answer type mismatches.
+    """
+    answer_type = _normalize_answer_type(expected_answer_type)
+    entity = _normalize_entity_phrase(target_entity)
+    base = str(query or "").strip()
+
+    candidates: list[str] = []
+    if answer_type == "direct_link":
+        scope = entity or "official service"
+        candidates.extend(
+            [
+                f"{scope} order page",
+                f"{scope} product page",
+                f"{scope} official order link",
+            ]
+        )
+    elif answer_type == "pricing":
+        scope = entity or "service"
+        candidates.extend(
+            [
+                f"{scope} pricing table",
+                f"{scope} monthly pricing",
+                f"{scope} order pricing",
+            ]
+        )
+    elif answer_type == "policy":
+        scope = entity or "refund policy"
+        if "policy" not in scope:
+            scope = f"{scope} policy"
+        candidates.extend(
+            [
+                f"{scope} terms of service",
+                f"{scope} official policy",
+                f"{scope} clause",
+            ]
+        )
+
+    if base:
+        candidates.append(base)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        q = " ".join(str(candidate).split()).strip()
+        if not q:
+            continue
+        key = q.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(q)
+        if len(deduped) >= max(1, max_queries):
+            break
+    return deduped
+
 
 @dataclass
 class RetryStrategy:

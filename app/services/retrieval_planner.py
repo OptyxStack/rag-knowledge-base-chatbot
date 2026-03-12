@@ -5,7 +5,7 @@ Single source of truth for:
 - retrieval profile/doc type/hard requirement policy
 - RetrievalPlan construction
 
-When QuerySpec is present, its retrieval fields are authoritative.
+When QuerySpec is present, retrieval_profile/doc_type_prior are soft hints.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ _ALLOWED_RETRIEVAL_PROFILES = {
 }
 _AUTHORITATIVE_DOC_TYPES = {"pricing", "policy", "tos", "docs", "howto"}
 _SUPPORTING_DOC_TYPES = {"conversation", "faq", "blog"}
+_DEFAULT_DIVERSITY_DOC_TYPES = ("howto", "docs", "faq", "conversation")
 _EVIDENCE_FAMILY_PROFILE_MAP = {
     "policy_terms": "policy_profile",
     "pricing_limits": "pricing_profile",
@@ -39,6 +40,46 @@ _EVIDENCE_FAMILY_PROFILE_MAP = {
     "account_access": "account_profile",
     "capability_availability": "generic_profile",
     "general_info": "generic_profile",
+}
+_PRODUCT_FAMILIES = {"windows_vps", "kvm_vps", "macos_vps", "dedicated"}
+_ANSWER_TYPE_PAGE_KIND_HINTS: dict[str, dict[str, Any]] = {
+    "direct_link": {
+        "preferred_page_kinds": ["order_page", "product_page"],
+        "supporting_page_kinds": ["pricing_table", "howto"],
+        "page_kind_weights": {"order_page": 1.45, "product_page": 1.25, "pricing_table": 1.1},
+        "demote_doc_types": ["faq", "blog"],
+    },
+    "pricing": {
+        "preferred_page_kinds": ["pricing_table", "product_page"],
+        "supporting_page_kinds": ["order_page", "howto"],
+        "page_kind_weights": {"pricing_table": 1.4, "product_page": 1.15, "order_page": 1.1},
+        "demote_doc_types": ["faq", "blog"],
+    },
+    "policy": {
+        "preferred_page_kinds": ["policy"],
+        "supporting_page_kinds": ["howto", "faq"],
+        "page_kind_weights": {"policy": 1.5, "howto": 1.05},
+        "demote_doc_types": ["blog"],
+    },
+    "troubleshooting": {
+        "preferred_page_kinds": ["howto", "faq"],
+        "supporting_page_kinds": ["product_page", "pricing_table"],
+        "page_kind_weights": {"howto": 1.35, "faq": 1.2, "product_page": 1.05},
+        "demote_doc_types": ["blog"],
+    },
+    "general": {
+        "preferred_page_kinds": ["product_page", "howto"],
+        "supporting_page_kinds": ["faq", "pricing_table"],
+        "page_kind_weights": {"product_page": 1.1, "howto": 1.08},
+        "demote_doc_types": ["blog"],
+    },
+}
+_ANSWER_TYPE_DOC_TYPE_HINTS: dict[str, list[str]] = {
+    "direct_link": ["pricing", "docs", "howto"],
+    "pricing": ["pricing", "tos", "docs"],
+    "policy": ["policy", "tos", "docs"],
+    "troubleshooting": ["howto", "docs", "faq"],
+    "general": ["docs", "faq"],
 }
 
 
@@ -63,6 +104,77 @@ def sanitize_retrieval_profile(value: Any) -> str | None:
     if profile in _ALLOWED_RETRIEVAL_PROFILES:
         return profile
     return None
+
+
+def _sanitize_answer_type(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "link": "direct_link",
+        "order_link": "direct_link",
+        "price_lookup": "pricing",
+        "refund_policy": "policy",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized or "general"
+
+
+def _normalize_product_family(value: Any) -> str | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    aliases = {
+        "windows": "windows_vps",
+        "windows vps": "windows_vps",
+        "windows_vps": "windows_vps",
+        "windows-rdp": "windows_vps",
+        "rdp": "windows_vps",
+        "kvm": "kvm_vps",
+        "kvm vps": "kvm_vps",
+        "kvm_vps": "kvm_vps",
+        "linux_vps": "kvm_vps",
+        "linux vps": "kvm_vps",
+        "linux": "kvm_vps",
+        "macos": "macos_vps",
+        "mac": "macos_vps",
+        "macos vps": "macos_vps",
+        "macos_vps": "macos_vps",
+        "dedicated": "dedicated",
+        "dedicated_server": "dedicated",
+        "dedicated server": "dedicated",
+        "dedicated_servers": "dedicated",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in _PRODUCT_FAMILIES else None
+
+
+def _derive_product_family_hints(query_spec: QuerySpec | None) -> list[str]:
+    if not query_spec:
+        return []
+    hints: list[str] = []
+    resolved_slots = getattr(query_spec, "resolved_slots", None) or {}
+    product_type = str(resolved_slots.get("product_type", "") or "").strip().lower()
+    os_name = str(resolved_slots.get("os", "") or "").strip().lower()
+    if product_type == "vps" and os_name == "windows":
+        hints.append("windows_vps")
+    elif product_type == "vps" and os_name in {"linux", "kvm"}:
+        hints.append("kvm_vps")
+    elif product_type == "vps" and os_name in {"mac", "macos"}:
+        hints.append("macos_vps")
+    elif product_type in {"dedicated", "dedicated_server", "dedicated_servers"}:
+        hints.append("dedicated")
+    for candidate in (
+        getattr(query_spec, "target_entity", None),
+        resolved_slots.get("product_type") if resolved_slots else None,
+        *list(getattr(query_spec, "entities", None) or []),
+    ):
+        normalized = _normalize_product_family(candidate)
+        if normalized and normalized not in hints:
+            hints.append(normalized)
+    return hints
+
+
+def _derive_answer_type_hints(answer_type: str) -> dict[str, Any]:
+    return dict(_ANSWER_TYPE_PAGE_KIND_HINTS.get(_sanitize_answer_type(answer_type), _ANSWER_TYPE_PAGE_KIND_HINTS["general"]))
 
 
 def _valid_doc_types() -> set[str]:
@@ -106,11 +218,13 @@ def infer_retrieval_profile(
     hard_requirements: list[str],
     evidence_families: list[str] | None = None,
 ) -> str:
-    """Infer retrieval profile when normalizer output omits it."""
+    """Infer retrieval profile from evidence_families and required_evidence (LLM output).
+    Principle-based: use what the user needs, not keyword mapping."""
     req = {x.lower() for x in _normalize_str_list(required_evidence)}
-    hard = {x.lower() for x in _normalize_str_list(hard_requirements)}
+    hard = {h.lower() for h in _normalize_str_list(hard_requirements)}
     combined = req | hard
-    for family in _normalize_str_list(evidence_families):
+    families = _normalize_str_list(evidence_families)
+    for family in families:
         mapped = _EVIDENCE_FAMILY_PROFILE_MAP.get(family.lower())
         if mapped:
             return mapped
@@ -203,7 +317,7 @@ def _resolve_hard_requirements(query_spec: QuerySpec | None) -> list[str]:
 
 
 def _resolve_doc_type_prior(query_spec: QuerySpec | None) -> list[str]:
-    """QuerySpec is authoritative for doc_type_prior when present."""
+    """Resolve doc-type hints from QuerySpec (soft preference only)."""
     if not query_spec:
         return []
     return _sanitize_doc_type_list(getattr(query_spec, "doc_type_prior", None) or [])
@@ -315,33 +429,65 @@ def _derive_doc_types(
     query_spec: QuerySpec | None,
     active_hypothesis: HypothesisSpec | None = None,
     hard_requirements: list[str],
+    required_evidence: list[str] | None = None,
+    evidence_families: list[str] | None = None,
+    answer_type: str,
     is_pricing: bool,
     settings,
     retry_strategy: RetryStrategy | None = None,
 ) -> tuple[list[str], list[str]]:
     preferred: list[str] = []
     excluded: list[str] = []
+    hard = {h.lower() for h in hard_requirements}
+    req_ev = {e.lower() for e in _normalize_str_list(required_evidence)}
+    families = set(_normalize_str_list(evidence_families))
 
+    hinted: list[str] = []
     if active_hypothesis and getattr(active_hypothesis, "doc_type_prior", None):
-        preferred.extend(_sanitize_doc_type_list(active_hypothesis.doc_type_prior))
+        hinted.extend(_sanitize_doc_type_list(active_hypothesis.doc_type_prior))
     elif query_spec is not None:
-        preferred.extend(_resolve_doc_type_prior(query_spec))
-    else:
-        hard = {h.lower() for h in hard_requirements}
-        if is_pricing and settings.retrieval_plans_fetch_doc_types:
-            preferred.extend(
-                t.strip()
-                for t in settings.retrieval_plans_fetch_doc_types.split(",")
-                if t.strip()
-            )
-        if profile == "policy_profile" or "policy_language" in hard:
-            preferred.extend(
-                t.strip()
-                for t in (settings.retrieval_policy_doc_types or "").split(",")
-                if t.strip()
-            )
-        if profile == "troubleshooting_profile" or "steps_structure" in hard:
-            preferred.extend(["howto", "docs", "faq"])
+        hinted.extend(_resolve_doc_type_prior(query_spec))
+
+    answer_type_defaults = _sanitize_doc_type_list(
+        _ANSWER_TYPE_DOC_TYPE_HINTS.get(_sanitize_answer_type(answer_type), _ANSWER_TYPE_DOC_TYPE_HINTS["general"])
+    )
+
+    profile_defaults: list[str] = []
+    if is_pricing:
+        configured = [
+            t.strip()
+            for t in str(getattr(settings, "retrieval_plans_fetch_doc_types", "") or "").split(",")
+            if t.strip()
+        ]
+        profile_defaults.extend(configured or ["pricing"])
+    if profile == "policy_profile" or "policy_language" in hard:
+        configured = [
+            t.strip()
+            for t in str(getattr(settings, "retrieval_policy_doc_types", "") or "").split(",")
+            if t.strip()
+        ]
+        profile_defaults.extend(configured or ["policy", "tos"])
+    if profile == "troubleshooting_profile" or "steps_structure" in hard:
+        profile_defaults.extend(["howto", "docs", "faq"])
+
+    preferred.extend(hinted)
+    preferred.extend(answer_type_defaults)
+    preferred.extend(_sanitize_doc_type_list(profile_defaults))
+
+    if profile == "generic_profile":
+        evidence_broaden: list[str] = []
+        if req_ev & {"numbers_units", "transaction_link", "has_any_url"} or families & {"pricing_limits", "transactional_link"}:
+            evidence_broaden.extend(["pricing", "tos"])
+        if req_ev & {"steps_structure"} or families & {"troubleshooting_steps"}:
+            evidence_broaden.extend(["howto", "docs"])
+        if evidence_broaden:
+            preferred.extend(evidence_broaden)
+        preferred_set = {p.lower() for p in preferred}
+        if len(preferred_set) <= 2:
+            for d in ("pricing", "howto", "faq", "docs"):
+                if d not in preferred_set:
+                    preferred.append(d)
+                    preferred_set.add(d)
 
     if retry_strategy and retry_strategy.filter_doc_types:
         retry_doc_types = _normalize_str_list(retry_strategy.filter_doc_types)
@@ -352,6 +498,43 @@ def _derive_doc_types(
         preferred.append("tos")
 
     return list(dict.fromkeys(preferred)), excluded
+
+
+def _derive_diversity_doc_types(
+    *,
+    settings,
+    preferred_doc_types: list[str],
+    retry_strategy: RetryStrategy | None = None,
+) -> list[str]:
+    """Resolve doc types for diversity fan-out retrieval, independent from normalizer output."""
+    if not bool(getattr(settings, "retrieval_diversity_enabled", False)):
+        return []
+    configured_raw = str(getattr(settings, "retrieval_diversity_doc_types", "") or "").strip()
+    configured = (
+        _sanitize_doc_type_list([t.strip() for t in configured_raw.split(",") if t.strip()])
+        if configured_raw
+        else _sanitize_doc_type_list(list(_DEFAULT_DIVERSITY_DOC_TYPES))
+    )
+    if not configured:
+        configured = _sanitize_doc_type_list(list(_DEFAULT_DIVERSITY_DOC_TYPES))
+
+    max_doc_types = int(getattr(settings, "retrieval_diversity_max_doc_types", 4) or 4)
+    max_doc_types = max(1, max_doc_types)
+
+    retry_filter = set()
+    if retry_strategy and retry_strategy.filter_doc_types:
+        retry_filter = {d.lower() for d in _normalize_str_list(retry_strategy.filter_doc_types)}
+    if retry_filter:
+        filtered = [d for d in configured if d.lower() in retry_filter]
+        if filtered:
+            configured = filtered
+
+    preferred_set = {d.lower() for d in preferred_doc_types}
+    prioritized = [d for d in configured if d.lower() in preferred_set]
+    for d in configured:
+        if d not in prioritized:
+            prioritized.append(d)
+    return prioritized[:max_doc_types]
 
 
 def _build_plan_from_inputs(
@@ -367,6 +550,8 @@ def _build_plan_from_inputs(
     excluded_doc_types: list[str],
     preferred_sources: list[str],
     active_hypothesis: HypothesisSpec | None,
+    answer_type: str = "general",
+    product_family_hints: list[str] | None = None,
     retry_strategy: RetryStrategy | None = None,
 ) -> RetrievalPlan:
     settings = get_settings()
@@ -396,6 +581,16 @@ def _build_plan_from_inputs(
         active_hypothesis=active_hypothesis,
         preferred_doc_types=preferred_doc_types,
         add_tos_for_pricing=profile == "pricing_profile",
+    )
+    answer_type_hints = _derive_answer_type_hints(answer_type)
+    preferred_page_kinds = _normalize_str_list(answer_type_hints.get("preferred_page_kinds"))
+    supporting_page_kinds = _normalize_str_list(answer_type_hints.get("supporting_page_kinds"))
+    page_kind_weights = dict(answer_type_hints.get("page_kind_weights") or {})
+    demote_doc_types = _sanitize_doc_type_list(answer_type_hints.get("demote_doc_types") or [])
+    diversity_doc_types = _derive_diversity_doc_types(
+        settings=settings,
+        preferred_doc_types=preferred_doc_types,
+        retry_strategy=retry_strategy,
     )
     active_required = _normalize_str_list(
         (
@@ -469,6 +664,15 @@ def _build_plan_from_inputs(
             "hard_requirements": hard_requirements,
             "active_required_evidence": active_required,
             "active_hard_requirements": active_hard,
+            "diversity_doc_types": diversity_doc_types,
+            "diversity_fetch_per_type": int(getattr(settings, "retrieval_diversity_fetch_per_type", 6) or 6),
+            "answer_type": _sanitize_answer_type(answer_type),
+            "preferred_page_kinds": preferred_page_kinds,
+            "supporting_page_kinds": supporting_page_kinds,
+            "page_kind_weights": page_kind_weights,
+            "product_family_hints": _normalize_str_list(product_family_hints or []),
+            "product_family_weights": {pf: 1.2 for pf in _normalize_str_list(product_family_hints or [])},
+            "demote_doc_types": demote_doc_types,
         },
     )
 
@@ -511,6 +715,19 @@ def build_retrieval_plan(
         semantic = selected_query
         fallback_queries = rewrite_candidates[1:5]
 
+    answer_type = _sanitize_answer_type(
+        getattr(query_spec, "answer_type", None)
+        if query_spec
+        else ("pricing" if profile == "pricing_profile" else "general")
+    )
+    active_req = _normalize_str_list(
+        getattr(active_hypothesis, "required_evidence", None) if active_hypothesis
+        else (getattr(query_spec, "required_evidence", None) if query_spec else [])
+    ) or _normalize_str_list(getattr(query_spec, "required_evidence", None) if query_spec else [])
+    active_families = _normalize_str_list(
+        getattr(active_hypothesis, "evidence_families", None) if active_hypothesis
+        else (getattr(query_spec, "evidence_families", None) if query_spec else [])
+    )
     preferred_doc_types, excluded_doc_types = _derive_doc_types(
         profile=profile,
         query_spec=query_spec,
@@ -520,6 +737,9 @@ def build_retrieval_plan(
             if active_hypothesis and active_hypothesis.hard_requirements
             else hard_requirements
         ),
+        required_evidence=active_req,
+        evidence_families=active_families,
+        answer_type=answer_type,
         is_pricing=profile == "pricing_profile",
         settings=get_settings(),
         retry_strategy=retry_strategy,
@@ -529,6 +749,7 @@ def build_retrieval_plan(
         active_hypothesis=active_hypothesis,
         retry_strategy=retry_strategy,
     )
+    product_family_hints = _derive_product_family_hints(query_spec)
 
     return _build_plan_from_inputs(
         query=selected_query,
@@ -542,6 +763,8 @@ def build_retrieval_plan(
         excluded_doc_types=excluded_doc_types,
         preferred_sources=preferred_sources,
         active_hypothesis=active_hypothesis,
+        answer_type=answer_type,
+        product_family_hints=product_family_hints,
         retry_strategy=retry_strategy,
     )
 
@@ -602,6 +825,19 @@ async def build_retrieval_plan_for_attempt(
         if active_hypothesis
         else None
     ) or _resolve_profile(query_spec, fallback_profile=fallback_profile)
+    answer_type = _sanitize_answer_type(
+        getattr(query_spec, "answer_type", None)
+        if query_spec
+        else ("pricing" if profile == "pricing_profile" else "general")
+    )
+    active_req = _normalize_str_list(
+        getattr(active_hypothesis, "required_evidence", None) if active_hypothesis
+        else (getattr(query_spec, "required_evidence", None) if query_spec else [])
+    ) or _normalize_str_list(getattr(query_spec, "required_evidence", None) if query_spec else [])
+    active_families = _normalize_str_list(
+        getattr(active_hypothesis, "evidence_families", None) if active_hypothesis
+        else (getattr(query_spec, "evidence_families", None) if query_spec else [])
+    )
     preferred_doc_types, excluded_doc_types = _derive_doc_types(
         profile=profile,
         query_spec=query_spec,
@@ -611,6 +847,9 @@ async def build_retrieval_plan_for_attempt(
             if active_hypothesis and active_hypothesis.hard_requirements
             else hard_requirements
         ),
+        required_evidence=active_req,
+        evidence_families=active_families,
+        answer_type=answer_type,
         is_pricing=profile == "pricing_profile",
         settings=get_settings(),
         retry_strategy=retry_strategy,
@@ -620,6 +859,7 @@ async def build_retrieval_plan_for_attempt(
         active_hypothesis=active_hypothesis,
         retry_strategy=retry_strategy,
     )
+    product_family_hints = _derive_product_family_hints(query_spec)
 
     plan = _build_plan_from_inputs(
         query=selected_query,
@@ -633,6 +873,8 @@ async def build_retrieval_plan_for_attempt(
         excluded_doc_types=excluded_doc_types,
         preferred_sources=preferred_sources,
         active_hypothesis=active_hypothesis,
+        answer_type=answer_type,
+        product_family_hints=product_family_hints,
         retry_strategy=retry_strategy,
     )
     return plan, {

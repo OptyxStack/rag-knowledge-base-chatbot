@@ -7,6 +7,7 @@ Replaces fixed top-k with LLM-driven selection.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 
@@ -23,7 +24,7 @@ EVIDENCE_SELECTOR_PROMPT = """You select evidence chunks for a support RAG syste
 Given a query, candidate chunks (with IDs), and required evidence types, select chunks that:
 1. Covers all required_evidence when possible (numbers, links, policy, steps)
 2. Maximizes relevance to the query
-3. Prefer docs (pricing, policy, howto, faq) over conversation when both exist and docs cover the requirement. Use conversation only when docs lack ideal chunks.
+3. Prefer structured docs (howto, docs, faq, policy, pricing, tos) over conversation when both exist. When structured docs include multiple options/paths (e.g. different access methods, plans, steps), keep them—do not replace with conversation anecdotes that cover fewer options.
 4. Prefer diverse doc_types and diverse plans/products (avoid over-concentrating on one plan type)
 5. Preserve at most one relevant conversation chunk when docs do not sufficiently answer the query
 
@@ -46,7 +47,7 @@ Rules:
 - coverage_map: requirement -> chunk_id that best satisfies it (optional, can be partial)
 - uncovered_requirements: requirements no chunk satisfies
 - Prefer diversity across doc_types and plan/product lines when candidates show multiple options. Do not treat different plans as redundant.
-- Prefer docs over conversation. Add conversation only when docs lack ideal coverage.
+- Prefer structured docs over conversation. If structured docs include steps/options/policies relevant to the query, keep them and avoid replacing them with conversation anecdotes. When evidence has multiple distinct options (e.g. different methods, plans, paths), ensure selection covers them—completeness over brevity.
 - Select 6-12 chunks based on query complexity and how many distinct options candidates offer.
 - Only use chunk IDs from the candidate list. Do not invent IDs."""
 
@@ -60,6 +61,112 @@ class EvidenceSelectionResult:
     uncovered_requirements: list[str]
     reasoning: str = ""
     used_llm: bool = False
+
+
+def _structured_doc_types_from_settings() -> set[str]:
+    raw = str(getattr(get_settings(), "evidence_selector_structured_doc_types", "") or "").strip()
+    if not raw:
+        return {"howto", "docs", "faq", "policy", "tos", "pricing"}
+    out = {
+        part.strip().lower()
+        for part in raw.split(",")
+        if part and part.strip()
+    }
+    return out or {"howto", "docs", "faq", "policy", "tos", "pricing"}
+
+
+def _is_structured_doc(doc_type: str, structured_doc_types: set[str]) -> bool:
+    return str(doc_type or "").strip().lower() in structured_doc_types
+
+
+def _find_lowest_score_index(
+    selected: list[tuple[SearchChunk, float]],
+    *,
+    predicate,
+) -> int | None:
+    candidates = [
+        (idx, score)
+        for idx, (_, score) in enumerate(selected)
+        if predicate(selected[idx][0], score)
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[1])[0]
+
+
+def _rebalance_structured_selection(
+    selected: list[tuple[SearchChunk, float]],
+    candidates: list[tuple[SearchChunk, float]],
+) -> list[tuple[SearchChunk, float]]:
+    if not selected:
+        return selected
+    settings = get_settings()
+    structured_doc_types = _structured_doc_types_from_settings()
+    conversation_cap = int(getattr(settings, "evidence_selector_conversation_cap", 1) or 1)
+    conversation_cap = max(0, conversation_cap)
+    try:
+        min_structured_share = float(
+            getattr(settings, "evidence_selector_min_structured_share", 0.6) or 0.6
+        )
+    except Exception:
+        min_structured_share = 0.6
+    min_structured_share = max(0.0, min(1.0, min_structured_share))
+
+    selected_items = list(selected)
+    selected_ids = {chunk.chunk_id for chunk, _ in selected_items}
+    structured_pool: list[tuple[SearchChunk, float]] = [
+        (chunk, score)
+        for chunk, score in candidates
+        if _is_structured_doc(chunk.doc_type or "", structured_doc_types)
+        and chunk.chunk_id not in selected_ids
+    ]
+
+    def _take_next_structured() -> tuple[SearchChunk, float] | None:
+        if not structured_pool:
+            return None
+        return structured_pool.pop(0)
+
+    while True:
+        conversation_selected = [
+            (idx, item)
+            for idx, item in enumerate(selected_items)
+            if (item[0].doc_type or "").strip().lower() == "conversation"
+        ]
+        if len(conversation_selected) <= conversation_cap:
+            break
+        replacement = _take_next_structured()
+        if replacement is None:
+            break
+        remove_idx = min(conversation_selected, key=lambda pair: pair[1][1])[0]
+        selected_ids.discard(selected_items[remove_idx][0].chunk_id)
+        selected_items[remove_idx] = replacement
+        selected_ids.add(replacement[0].chunk_id)
+
+    structured_count = sum(
+        1
+        for chunk, _ in selected_items
+        if _is_structured_doc(chunk.doc_type or "", structured_doc_types)
+    )
+    target_structured = min(
+        len(selected_items),
+        max(0, math.ceil(len(selected_items) * min_structured_share)),
+    )
+    while structured_count < target_structured:
+        replacement = _take_next_structured()
+        if replacement is None:
+            break
+        remove_idx = _find_lowest_score_index(
+            selected_items,
+            predicate=lambda chunk, score: not _is_structured_doc(chunk.doc_type or "", structured_doc_types),
+        )
+        if remove_idx is None:
+            break
+        selected_ids.discard(selected_items[remove_idx][0].chunk_id)
+        selected_items[remove_idx] = replacement
+        selected_ids.add(replacement[0].chunk_id)
+        structured_count += 1
+
+    return selected_items
 
 
 def _coverage_mapping_allowed(requirement: str, chunk: SearchChunk) -> bool:
@@ -130,7 +237,10 @@ async def select_evidence_for_query(
         )
 
     if not use_llm:
-        selected = reranked[:top_k_fallback]
+        selected = _rebalance_structured_selection(
+            reranked[:top_k_fallback],
+            reranked[:20],
+        )
         return EvidenceSelectionResult(
             selected=selected,
             coverage_map={},
@@ -204,6 +314,7 @@ async def select_evidence_for_query(
                 if cid in chunk_by_id and cid not in seen:
                     selected.append(chunk_by_id[cid])
                     seen.add(cid)
+        selected = _rebalance_structured_selection(selected, candidates)
         coverage_map = _validate_coverage_map(
             coverage_map,
             selected=selected,
@@ -221,7 +332,10 @@ async def select_evidence_for_query(
 
     except Exception as e:
         logger.warning("evidence_selector_llm_failed", error=str(e))
-        selected = candidates[:top_k_fallback]
+        selected = _rebalance_structured_selection(
+            candidates[:top_k_fallback],
+            candidates,
+        )
         return EvidenceSelectionResult(
             selected=selected,
             coverage_map={},

@@ -1,8 +1,11 @@
-"""LLM Self-Critic – archi_v3. Checks answer quality; suggests regenerate on fail."""
+"""LLM self-critic: checks answer grounding and completeness."""
+
+from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -14,16 +17,24 @@ logger = get_logger(__name__)
 
 SELF_CRITIC_PROMPT = """You are a quality reviewer for a support chatbot answer.
 
-Check if the answer is grounded in the evidence. Output JSON only:
+Check whether the answer is grounded in evidence and complete enough for the query context.
+Output JSON only:
 {
   "pass": true,
   "issues": [],
   "suggested_fix": ""
 }
 
-pass: false if any of: unsupported claims, incomplete answer, missing critical info, overgeneralization, hallucination
-issues: list of specific problems (e.g. "Claim X not in evidence", "Missing pricing for Plan Y")
-suggested_fix: brief instruction for regeneration when pass=false (e.g. "Add specific prices from evidence")"""
+Set pass=false if any of these are true:
+- Unsupported claims or hallucinations
+- Missing critical evidence-backed facts
+- Overgeneralization that contradicts evidence scope
+- Incomplete option coverage: the query/evidence expects multiple actionable options/paths but answer omits major ones
+
+Completeness check (when require_completeness in context is true): Verify the answer covers all major options from evidence. If evidence has multiple distinct methods/plans/paths (e.g. different access methods, different plans, different steps) and the answer mentions only one or omits key alternatives, set pass=false with issue "Incomplete: answer omits [X] from evidence".
+
+issues: concise, specific problems
+suggested_fix: one short instruction for regeneration"""
 
 
 @dataclass
@@ -40,28 +51,44 @@ async def critique(
     answer: str,
     citations: list[dict],
     evidence: list[EvidenceChunk],
+    context: dict[str, Any] | None = None,
 ) -> SelfCriticResult | None:
-    """LLM critiques answer. Returns None on error (treat as pass)."""
-    if not getattr(get_settings(), "self_critic_enabled", False):
+    """LLM critiques answer. Returns None on error (treated as pass)."""
+    settings = get_settings()
+    if not getattr(settings, "self_critic_enabled", False):
         return None
 
     evidence_preview = "\n".join(
-        f"- [{e.chunk_id}] {(e.snippet or e.full_text or '')[:150]}..."
-        for e in evidence[:5]
+        f"- [{e.chunk_id}] ({e.doc_type or 'unknown'}) {(e.snippet or e.full_text or '')[:180]}..."
+        for e in evidence[:8]
     )
 
-    user_content = f"""Query: {query}
+    user_parts = [
+        f"Query: {query}",
+        "",
+        "Answer:",
+        answer[:1800],
+        "",
+        f"Citations count: {len(citations)}",
+        "",
+        "Evidence preview:",
+        evidence_preview,
+    ]
 
-Answer:
-{answer[:1500]}
-
-Citations: {len(citations)}
-
-Evidence preview:
-{evidence_preview}"""
+    critic_context = dict(context or {})
+    critic_context["require_completeness"] = bool(
+        getattr(settings, "self_critic_require_completeness", True)
+    )
+    user_parts.extend([
+        "",
+        "Evaluation context:",
+        json.dumps(critic_context, ensure_ascii=False)[:2500],
+    ])
+    user_content = "\n".join(user_parts).strip()
 
     try:
         from app.core.tracing import current_llm_task_var
+
         current_llm_task_var.set("self_critic")
         llm = get_llm_gateway()
         model = get_model_for_task("self_critic")
@@ -72,7 +99,7 @@ Evidence preview:
             ],
             temperature=0.0,
             model=model,
-            max_tokens=256,
+            max_tokens=320,
         )
         content = (resp.content or "").strip()
         if "```json" in content:
@@ -90,6 +117,7 @@ Evidence preview:
         result = SelfCriticResult(pass_=pass_, issues=issues, suggested_fix=suggested_fix)
         try:
             from app.core.metrics import self_critic_total, self_critic_fail_total
+
             self_critic_total.inc()
             if not result.pass_:
                 self_critic_fail_total.inc()

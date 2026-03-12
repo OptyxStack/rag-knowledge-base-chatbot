@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 DEFAULT_MAX_PAGES = 50
 DEFAULT_MAX_DEPTH = 3
 DEFAULT_TIMEOUT = 15.0
+_PRODUCT_FAMILY_KEYS = ("windows_vps", "kvm_vps", "macos_vps", "dedicated")
 
 
 def _normalize_url(url: str, base: str) -> str | None:
@@ -71,6 +72,75 @@ def _url_matches_exclude(url: str, exclude_prefixes: list[str]) -> bool:
     return False
 
 
+def _infer_page_kind(*, url: str, doc_type: str, title: str = "", text: str = "") -> str:
+    dt = (doc_type or "").strip().lower()
+    if dt == "conversation" or url.startswith("ticket://"):
+        return "conversation"
+    if dt == "faq":
+        return "faq"
+    if dt in {"howto", "docs"}:
+        return "howto"
+    if dt in {"policy", "tos"}:
+        return "policy"
+    if dt == "blog":
+        return "blog"
+
+    blob = f"{url} {title} {text}".lower()
+    if any(token in blob for token in ("/order", "checkout", "cart", "buy now", "purchase")):
+        return "order_page"
+    if dt == "pricing" or any(token in blob for token in ("pricing", "plans", "price", "/mo")):
+        return "pricing_table"
+    if any(token in blob for token in ("vps", "server", "dedicated", "product")):
+        return "product_page"
+    return "blog"
+
+
+def _normalize_product_family(value: str | None) -> str | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    aliases = {
+        "windows": "windows_vps",
+        "windows_vps": "windows_vps",
+        "windows-rdp": "windows_vps",
+        "rdp": "windows_vps",
+        "kvm": "kvm_vps",
+        "kvm_vps": "kvm_vps",
+        "linux_vps": "kvm_vps",
+        "linux": "kvm_vps",
+        "macos": "macos_vps",
+        "mac": "macos_vps",
+        "macos_vps": "macos_vps",
+        "dedicated": "dedicated",
+        "dedicated_server": "dedicated",
+        "dedicated_servers": "dedicated",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in _PRODUCT_FAMILY_KEYS else None
+
+
+def _infer_product_family(*, url: str, title: str = "", text: str = "") -> str | None:
+    blob = f"{url} {title} {text}".lower()
+    if ("windows" in blob or "rdp" in blob) and "vps" in blob:
+        return "windows_vps"
+    if "kvm" in blob and "vps" in blob:
+        return "kvm_vps"
+    if ("macos" in blob or "mac os" in blob or "apple" in blob) and "vps" in blob:
+        return "macos_vps"
+    if "dedicated" in blob:
+        return "dedicated"
+    return None
+
+
+def _build_taxonomy_metadata(*, url: str, title: str, text: str, doc_type: str) -> dict:
+    page_kind = _infer_page_kind(url=url, doc_type=doc_type, title=title, text=text)
+    product_family = _normalize_product_family(_infer_product_family(url=url, title=title, text=text))
+    metadata = {"page_kind": page_kind}
+    if product_family:
+        metadata["product_family"] = product_family
+    return metadata
+
+
 def crawl_website(
     seed_url: str,
     max_pages: int = DEFAULT_MAX_PAGES,
@@ -122,6 +192,12 @@ def crawl_website(
 
         title = result.get("title", "Untitled")
         doc_type = _doc_type_from_url(url)
+        taxonomy_meta = _build_taxonomy_metadata(
+            url=url,
+            title=title,
+            text=content,
+            doc_type=doc_type,
+        )
         docs.append({
             "url": url,
             "source_url": url,
@@ -129,7 +205,11 @@ def crawl_website(
             "content": content,
             "raw_text": content,
             "doc_type": doc_type,
-            "metadata": {"crawl_depth": depth, "source": "web_crawl"},
+            "metadata": {
+                "crawl_depth": depth,
+                "source": "web_crawl",
+                **taxonomy_meta,
+            },
             "source_file": "web_crawl",
         })
 

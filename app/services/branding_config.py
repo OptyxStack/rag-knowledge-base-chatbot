@@ -79,10 +79,9 @@ FALLBACK_SYSTEM_PROMPT = (
 LANE_AWARE_PROMPT_SUFFIX = """
 
 INTERNAL ROUTING NOTES:
-- The runtime may route the answer as PASS_STRONG, PASS_WEAK, or PASS_LLM_DECIDES.
-- PASS_WEAK is a bounded-answer lane. In JSON output, still use decision="PASS".
-- PASS_LLM_DECIDES: evidence gate failed but you may answer from context. If you can, answer; if not, reply with the fallback message only.
-- For PASS_WEAK style answers, state only confirmed details, explicitly name what is not verified, and include at most one short follow-up question when it would help refine the next answer.
+- The runtime calibrates output mode as PASS_EXACT, PASS_PARTIAL, or ASK_USER.
+- PASS_PARTIAL is a bounded-answer mode. In JSON output, still use decision="PASS".
+- For PASS_PARTIAL: use natural, client-friendly language. When unclear, say briefly (e.g. "We don't have that")—no long disclaimers or lists of missing items. At most one short follow-up question.
 """
 
 def _get_fallback_intents() -> list[tuple[str, str, str]]:
@@ -137,7 +136,7 @@ def _build_layered_prompt(
         parts.append("\nCUSTOM RULES (admin-defined):\n" + custom_rules.strip())
     parts.append(OUTPUT_SCHEMA)
     prompt = "\n\n".join(parts)
-    if "PASS_WEAK is a bounded-answer lane" not in prompt:
+    if "PASS_PARTIAL is a bounded-answer mode" not in prompt:
         prompt = f"{prompt.rstrip()}\n{LANE_AWARE_PROMPT_SUFFIX}".strip()
     return prompt
 
@@ -232,7 +231,7 @@ def get_system_prompt() -> str:
         persona = persona or "You are a support assistant speaking on behalf of the company. Use 'we', 'our', and 'us' when referring to the service—you belong to the team."
         prompt = _build_layered_prompt(persona, domain, custom_rules)
 
-    if "PASS_WEAK is a bounded-answer lane" not in prompt:
+    if "PASS_PARTIAL is a bounded-answer mode" not in prompt:
         prompt = f"{prompt.rstrip()}\n{LANE_AWARE_PROMPT_SUFFIX}".strip()
     return prompt
 

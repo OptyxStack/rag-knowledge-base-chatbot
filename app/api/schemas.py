@@ -310,6 +310,7 @@ class ArchiConfigResponse(BaseModel):
     final_polish_enabled: bool
     doc_type_classifier_enabled: bool = False
     retrieval_doc_type_use_llm: bool = False
+    page_kind_filter_enabled: bool = False
     llm_model_economy: str = "gpt-4o-mini"
     llm_task_aware_routing_enabled: bool = True
 
@@ -327,6 +328,7 @@ class ArchiConfigUpdateRequest(BaseModel):
     final_polish_enabled: bool | None = None
     doc_type_classifier_enabled: bool | None = None
     retrieval_doc_type_use_llm: bool | None = None
+    page_kind_filter_enabled: bool | None = None
     llm_model_economy: str | None = None
     llm_task_aware_routing_enabled: bool | None = None
 

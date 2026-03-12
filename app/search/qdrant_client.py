@@ -97,20 +97,39 @@ class QdrantSearchClient:
         vector: list[float],
         top_n: int = 50,
         doc_types: list[str] | None = None,
+        page_kinds: list[str] | None = None,
+        product_families: list[str] | None = None,
     ) -> list[SearchChunk]:
         """Vector similarity search."""
         client = self._get_client()
 
-        filter_condition = None
+        must_filters: list[qdrant_models.FieldCondition] = []
         if doc_types:
-            filter_condition = qdrant_models.Filter(
-                must=[
-                    qdrant_models.FieldCondition(
-                        key="doc_type",
-                        match=qdrant_models.MatchAny(any=doc_types),
-                    )
-                ]
+            must_filters.append(
+                qdrant_models.FieldCondition(
+                    key="doc_type",
+                    match=qdrant_models.MatchAny(any=doc_types),
+                )
             )
+        if page_kinds:
+            normalized = [str(v).strip().lower() for v in page_kinds if str(v).strip()]
+            if normalized:
+                must_filters.append(
+                    qdrant_models.FieldCondition(
+                        key="page_kind",
+                        match=qdrant_models.MatchAny(any=normalized),
+                    )
+                )
+        if product_families:
+            normalized = [str(v).strip().lower() for v in product_families if str(v).strip()]
+            if normalized:
+                must_filters.append(
+                    qdrant_models.FieldCondition(
+                        key="product_family",
+                        match=qdrant_models.MatchAny(any=normalized),
+                    )
+                )
+        filter_condition = qdrant_models.Filter(must=must_filters) if must_filters else None
 
         try:
             # Use query_points (new API); search() was removed in qdrant-client 1.7+

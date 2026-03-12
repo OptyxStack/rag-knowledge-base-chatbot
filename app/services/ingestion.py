@@ -17,6 +17,7 @@ from app.db.models import Document, Chunk
 from app.search.embeddings import get_embedding_provider
 from app.search.opensearch_client import OpenSearchClient
 from app.search.qdrant_client import QdrantSearchClient
+from app.services.source_loaders import _with_taxonomy_metadata
 
 logger = get_logger(__name__)
 
@@ -30,7 +31,7 @@ def _clean_html(html: str, base_url: str | None = None) -> str:
     from urllib.parse import urljoin, urlparse
 
     soup = BeautifulSoup(html, "lxml")
-    for tag in soup(["script", "style", "nav", "footer", "header"]):
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
         tag.decompose()
 
     # Preserve heading structure as markdown-like markers so chunking can keep semantic boundaries.
@@ -247,8 +248,15 @@ class IngestionService:
         self._qdrant = qdrant or QdrantSearchClient()
         self._embedder = embedder or get_embedding_provider()
 
-    async def ingest_document(self, doc: dict[str, Any], db_session) -> str | None:
-        """Ingest a single document. Returns document_id or None if skipped (idempotent)."""
+    async def ingest_document(
+        self,
+        doc: dict[str, Any],
+        db_session,
+        *,
+        force_reindex: bool = False,
+    ) -> str | None:
+        """Ingest a single document. Returns document_id or None if skipped (idempotent).
+        Use force_reindex=True to re-index existing docs (e.g. after adding page_kind metadata)."""
         url = doc.get("url") or doc.get("source_url")
         if not url:
             logger.warning("ingest_skipped_no_url")
@@ -268,6 +276,15 @@ class IngestionService:
         cleaned, raw, prepared_chunks = prepare_document(doc)
         checksum = _checksum(cleaned)
 
+        # Enrich metadata with page_kind and product_family for retrieval filtering
+        enriched_metadata = _with_taxonomy_metadata(
+            url=url,
+            title=title,
+            text=cleaned,
+            doc_type=doc_type,
+            metadata=metadata if isinstance(metadata, dict) else None,
+        )
+
         # Optional: store raw doc in object storage
         if raw:
             try:
@@ -286,7 +303,7 @@ class IngestionService:
 
         result = await db_session.execute(select(DocModel).where(DocModel.source_url == url))
         existing = result.scalars().first()
-        if existing and existing.checksum == checksum:
+        if existing and existing.checksum == checksum and not force_reindex:
             logger.info("ingest_skipped_unchanged", source_url=url)
             # Content unchanged: skip re-chunk/re-embed but still update doc_type, title (e.g. from classifier)
             existing.title = title
@@ -351,8 +368,12 @@ class IngestionService:
                 chunk_meta["parent_ref"] = prepared.parent_ref
             if prepared.parent_heading:
                 chunk_meta["parent_heading"] = prepared.parent_heading
-            if metadata:
-                chunk_meta.update({k: v for k, v in metadata.items() if k in ("product", "category", "key_points") and v is not None})
+            chunk_meta.update({
+                k: v
+                for k, v in enriched_metadata.items()
+                if k in ("product", "category", "key_points", "page_kind", "product_family")
+                and v is not None
+            })
             chunk = Chunk(
                 document_id=document_id,
                 chunk_index=idx,
@@ -371,8 +392,12 @@ class IngestionService:
                 qdrant_meta["parent_ref"] = prepared.parent_ref
             if prepared.parent_heading:
                 qdrant_meta["parent_heading"] = prepared.parent_heading
-            if metadata:
-                qdrant_meta.update({k: v for k, v in metadata.items() if k in ("product", "category") and v is not None})
+            qdrant_meta.update({
+                k: v
+                for k, v in enriched_metadata.items()
+                if k in ("product", "category", "page_kind", "product_family")
+                and v is not None
+            })
             self._qdrant.upsert_chunk(
                 chunk_id=chunk.id,
                 vector=vectors[0],
@@ -392,6 +417,7 @@ class IngestionService:
                 source_url=url,
                 effective_date=effective_date.isoformat() if effective_date else None,
                 chunk_text=chunk_text,
+                metadata=enriched_metadata,
             )
 
         await db_session.commit()
