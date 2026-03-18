@@ -200,7 +200,11 @@ If you have a WHMCS dump file (e.g. `source/greenvps_whmcs.sql`):
 make import-whmcs-dry   # Validate parse first
 make import-whmcs       # Run actual import
 ```
+This project improves chatbot performance through structured evaluation, prompt optimization, and continuous feedback loops.
 
+Powered by [OptyxStack AI Optimization](https://optyxstack.com/ai-optimization)
+ to enhance accuracy, relevance, and reliability at scale.
+ 
 Then approve tickets in **Sample conversations** and ingest as in steps 6–7 of Method 3.
 
 ### Chat workflow (API)
